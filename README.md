@@ -81,8 +81,11 @@ OpenCV is optional but recommended for the Video Wall auto-calibration feature. 
 brew install opencv llvm
 
 # Set environment variables for the build
+# Note: Adjust path based on your LLVM version (check with: brew list llvm | grep libclang)
 export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
-export DYLD_LIBRARY_PATH="/usr/local/opt/llvm/lib:$DYLD_LIBRARY_PATH"
+# OR for specific version:
+# export LIBCLANG_PATH="/usr/local/Cellar/llvm/22.1.0/lib"
+export DYLD_LIBRARY_PATH="$LIBCLANG_PATH:$DYLD_LIBRARY_PATH"
 
 # Build with OpenCV support
 cargo build --release --features opencv
@@ -243,8 +246,11 @@ This error occurs when libclang cannot be found during the OpenCV build.
 brew list llvm | grep libclang
 
 # Set the environment variable (add to ~/.zshrc or ~/.bash_profile)
+# Common paths:
 export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
-export DYLD_LIBRARY_PATH="/usr/local/opt/llvm/lib:$DYLD_LIBRARY_PATH"
+# OR for specific LLVM version:
+# export LIBCLANG_PATH="/usr/local/Cellar/llvm/22.1.0/lib"
+export DYLD_LIBRARY_PATH="$LIBCLANG_PATH:$DYLD_LIBRARY_PATH"
 
 # Reload shell configuration
 source ~/.zshrc  # or source ~/.bash_profile
