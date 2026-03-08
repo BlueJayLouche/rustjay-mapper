@@ -61,6 +61,7 @@ pub struct ControlGui {
     videowall_camera_resolution: (u32, u32),
     videowall_output_resolution: (u32, u32),
     videowall_marker_size: f32,
+    videowall_auto_detect: bool,
     
     // Per-display adjustment state
     videowall_selected_display: i32,
@@ -103,6 +104,7 @@ impl ControlGui {
             videowall_camera_resolution: (1920, 1080),
             videowall_output_resolution: (1920, 1080),
             videowall_marker_size: 0.75,
+            videowall_auto_detect: true,
             videowall_selected_display: 0,
             videowall_preset_name: String::new(),
             videowall_presets: Vec::new(),
@@ -507,6 +509,16 @@ impl ControlGui {
             .build(&mut self.videowall_marker_size);
         ui.text_disabled(format!("Marker fills {:.0}% of each display", self.videowall_marker_size * 100.0));
         
+        // Auto-detect mode checkbox
+        if ui.checkbox("Auto-detect displays", &mut self.videowall_auto_detect) {
+            log::info!("Auto-detect mode: {}", self.videowall_auto_detect);
+        }
+        if self.videowall_auto_detect {
+            ui.text_disabled("Will detect any number of displays (0-9)");
+        } else {
+            ui.text_disabled("Will expect all displays in grid to be present");
+        }
+        
         ui.separator();
         
         // Check if calibration is active from shared state
@@ -556,7 +568,8 @@ impl ControlGui {
                 .with_marker_config(crate::videowall::MarkerDisplayConfig {
                     marker_size_percent: self.videowall_marker_size,
                     margin_percent: (1.0 - self.videowall_marker_size) / 2.0,
-                });
+                })
+                .with_auto_detect(self.videowall_auto_detect);
             
             match calibration.start_realtime(
                 grid_size,

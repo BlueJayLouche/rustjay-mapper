@@ -216,8 +216,10 @@ pub struct CalibrationController {
     mode: CalibrationMode,
     /// Current phase
     phase: CalibrationPhase,
-    /// Grid size being calibrated
+    /// Grid size being calibrated (max possible displays)
     grid_size: GridSize,
+    /// Whether to use auto-detect mode (detect any number of displays)
+    auto_detect: bool,
     /// Timing configuration
     timing: CalibrationTiming,
     /// Marker display configuration
@@ -245,6 +247,7 @@ impl CalibrationController {
             },
             phase: CalibrationPhase::Idle,
             grid_size: GridSize::default(),
+            auto_detect: false,
             timing: CalibrationTiming::default(),
             marker_config: MarkerDisplayConfig::default(),
             generator: ArUcoGenerator::new(ArUcoDictionary::default()),
@@ -254,6 +257,12 @@ impl CalibrationController {
             phase_start: Instant::now(),
             calibration_start: None,
         }
+    }
+
+    /// Enable auto-detect mode (detect any number of displays)
+    pub fn with_auto_detect(mut self, enabled: bool) -> Self {
+        self.auto_detect = enabled;
+        self
     }
 
     /// Configure timing
@@ -585,11 +594,21 @@ impl CalibrationController {
             .map(|f| (f.width, f.height))
             .unwrap_or((1920, 1080));
         
+        // Determine effective grid size
+        // In auto-detect mode, we use the original grid size but only enable detected displays
+        // The quad mapper will create quads for detected markers only
+        let effective_grid_size = if self.auto_detect {
+            // Auto-detect: use whatever grid size was configured, missing displays are disabled
+            self.grid_size
+        } else {
+            self.grid_size
+        };
+        
         // Use QuadMapper to build quads
         let config = QuadMapConfig::default();
         let result = QuadMapper::build_quads(
             &self.detections,
-            self.grid_size,
+            effective_grid_size,
             camera_resolution,
             Some(config),
         );
@@ -606,11 +625,26 @@ impl CalibrationController {
             ));
         }
         
-        // Log missing displays (expected with dummy displays)
-        if !result.missing_displays.is_empty() {
+        // Log detection results
+        let detected_count = result.quads.len();
+        let expected_count = effective_grid_size.total_displays() as usize;
+        
+        if detected_count < expected_count {
             log::info!(
-                "Displays not detected (will be disabled): {:?}",
-                result.missing_displays
+                "Auto-detect mode: Found {} of {} possible displays",
+                detected_count,
+                expected_count
+            );
+            if !result.missing_displays.is_empty() {
+                log::info!(
+                    "Displays not detected (will be disabled): {:?}",
+                    result.missing_displays
+                );
+            }
+        } else {
+            log::info!(
+                "Auto-detect mode: Found all {} displays",
+                detected_count
             );
         }
         
@@ -659,7 +693,7 @@ impl CalibrationController {
         
         Ok(VideoWallConfig::from_quads(
             result.quads,
-            self.grid_size,
+            effective_grid_size,
             camera_resolution,
             info,
         ))
