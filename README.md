@@ -66,18 +66,95 @@ See [DESIGN.md](DESIGN.md) for detailed architecture documentation.
 
 - Rust 1.70+
 - NDI SDK (for NDI support)
+- OpenCV 4.x + libclang (optional, for enhanced ArUco marker detection)
 - macOS, Linux, or Windows
+
+### Optional Dependencies
+
+#### OpenCV + libclang (for Video Wall calibration)
+
+OpenCV is optional but recommended for the Video Wall auto-calibration feature. It provides more robust ArUco marker detection. If not installed, the app will use an embedded marker dictionary.
+
+**macOS:**
+```bash
+# Install OpenCV and LLVM (includes libclang)
+brew install opencv llvm
+
+# Set environment variables for the build
+export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
+export DYLD_LIBRARY_PATH="/usr/local/opt/llvm/lib:$DYLD_LIBRARY_PATH"
+
+# Build with OpenCV support
+cargo build --release --features opencv
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+# Install OpenCV and libclang
+sudo apt-get update
+sudo apt-get install libopencv-dev libclang-dev
+
+# Build with OpenCV support
+cargo build --release --features opencv
+```
+
+**Linux (Fedora/RHEL):**
+```bash
+# Install OpenCV and libclang
+sudo dnf install opencv-devel clang-devel
+
+# Build with OpenCV support
+cargo build --release --features opencv
+```
+
+**Windows:**
+```powershell
+# Install OpenCV using vcpkg
+vcpkg install opencv4[core,imgproc] --triplet x64-windows
+
+# Install LLVM for libclang
+# Download from: https://github.com/llvm/llvm-project/releases
+# Add LLVM to your PATH or set LIBCLANG_PATH environment variable
+
+# Set environment variable (in PowerShell)
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+
+# Build with OpenCV support
+cargo build --release --features opencv
+```
 
 ### Build
 
+**Standard build (without OpenCV):**
 ```bash
 cargo build --release
+```
+
+**Build with all features (OpenCV + webcam):**
+```bash
+cargo build --release --features "opencv webcam"
+```
+
+**Build without default features (minimal):**
+```bash
+cargo build --release --no-default-features
 ```
 
 ### Run
 
 ```bash
-cargo run
+cargo run --release
+```
+
+**Run with OpenCV features:**
+```bash
+# macOS/Linux
+export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
+cargo run --release --features opencv
+
+# Windows
+set LIBCLANG_PATH=C:\Program Files\LLVM\bin
+cargo run --release --features opencv
 ```
 
 ## Usage
@@ -150,6 +227,82 @@ src/
 ├── engine/          # wgpu rendering engine
 ├── gui/             # ImGui control interface
 └── audio/           # Audio input (optional)
+```
+
+## Troubleshooting
+
+### OpenCV / libclang Issues
+
+**Error: `libclang shared library is not loaded on this thread`**
+
+This error occurs when libclang cannot be found during the OpenCV build.
+
+**Solution for macOS:**
+```bash
+# Find where libclang is installed
+brew list llvm | grep libclang
+
+# Set the environment variable (add to ~/.zshrc or ~/.bash_profile)
+export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
+export DYLD_LIBRARY_PATH="/usr/local/opt/llvm/lib:$DYLD_LIBRARY_PATH"
+
+# Reload shell configuration
+source ~/.zshrc  # or source ~/.bash_profile
+```
+
+**Solution for Linux:**
+```bash
+# Find libclang
+find /usr -name "libclang.so*" 2>/dev/null
+
+# Set the environment variable (adjust path as needed)
+export LIBCLANG_PATH="/usr/lib/llvm-14/lib"
+```
+
+**Solution for Windows:**
+```powershell
+# Set environment variable in PowerShell
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+
+# Or set permanently via System Properties > Environment Variables
+```
+
+**Error: `OpenCV not found`**
+
+Make sure OpenCV is installed and `pkg-config` can find it:
+
+```bash
+# macOS
+brew install opencv pkg-config
+pkg-config --cflags --libs opencv4
+
+# Linux
+sudo apt-get install libopencv-dev pkg-config
+pkg-config --cflags --libs opencv4
+```
+
+**Build without OpenCV (fallback mode):**
+
+If you cannot install OpenCV, the app will work with an embedded marker dictionary:
+
+```bash
+cargo build --release --no-default-features
+```
+
+Note: Video wall calibration will use fallback marker generation which has slightly different marker patterns but is fully functional.
+
+### NDI SDK Not Found
+
+Download and install the NDI SDK from:
+https://ndi.video/tools-sdk/
+
+After installation, you may need to set:
+```bash
+# macOS/Linux
+export NDI_SDK_DIR="/path/to/NDI/sdk"
+
+# Windows
+set NDI_SDK_DIR=C:\Program Files\NDI\NDI 5 SDK
 ```
 
 ## License
