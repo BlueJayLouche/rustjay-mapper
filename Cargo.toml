@@ -63,7 +63,9 @@ imgui-wgpu = "0.25"
 imgui-winit-support = "0.13"
 
 # OpenCV for video wall calibration (optional feature)
-opencv = { version = "0.92", default-features = false, features = ["aruco", "imgproc", "videoio"], optional = true }
+# Note: Disabled by default due to OpenCV 4.13+ compatibility issues
+# The embedded marker dictionary provides equivalent functionality
+# opencv = { version = "0.98", default-features = false, features = ["aruco", "clang-runtime"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Syphon (macOS GPU texture sharing)
@@ -84,7 +86,8 @@ panic = "abort"
 [features]
 default = ["webcam"]
 webcam = ["nokhwa"]
-opencv = ["dep:opencv"]
+# OpenCV feature disabled - use embedded marker dictionary instead
+# opencv = ["dep:opencv"]
 
 [profile.dev]
 opt-level = 1

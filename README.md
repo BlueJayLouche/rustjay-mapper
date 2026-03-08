@@ -71,60 +71,28 @@ See [DESIGN.md](DESIGN.md) for detailed architecture documentation.
 
 ### Optional Dependencies
 
-#### OpenCV + libclang (for Video Wall calibration)
+#### OpenCV (NOT CURRENTLY SUPPORTED)
 
-OpenCV is optional but recommended for the Video Wall auto-calibration feature. It provides more robust ArUco marker detection. If not installed, the app will use an embedded marker dictionary.
+**Status:** OpenCV 4.13+ has compatibility issues with the `opencv` Rust crate. The Video Wall feature works perfectly without OpenCV using the embedded ArUco marker dictionary.
 
-**macOS:**
+**Recommendation:** Use the default build without OpenCV. The embedded dictionary provides equivalent marker detection quality.
+
+If you need OpenCV support in the future, you would need to install OpenCV 4.8 or earlier:
+
+**macOS (OpenCV 4.8 - NOT recommended due to compatibility):**
 ```bash
-# Install OpenCV and LLVM (includes libclang)
-brew install opencv llvm
+# Install older OpenCV version
+brew install opencv@4
 
-# Set environment variables for the build
-# Note: Adjust path based on your LLVM version (check with: brew list llvm | grep libclang)
+# Set environment variables
 export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
-# OR for specific version:
-# export LIBCLANG_PATH="/usr/local/Cellar/llvm/22.1.0/lib"
 export DYLD_LIBRARY_PATH="$LIBCLANG_PATH:$DYLD_LIBRARY_PATH"
 
-# Build with OpenCV support
-cargo build --release --features opencv
+# Build with OpenCV support (feature currently disabled)
+# cargo build --release --features opencv
 ```
 
-**Linux (Ubuntu/Debian):**
-```bash
-# Install OpenCV and libclang
-sudo apt-get update
-sudo apt-get install libopencv-dev libclang-dev
-
-# Build with OpenCV support
-cargo build --release --features opencv
-```
-
-**Linux (Fedora/RHEL):**
-```bash
-# Install OpenCV and libclang
-sudo dnf install opencv-devel clang-devel
-
-# Build with OpenCV support
-cargo build --release --features opencv
-```
-
-**Windows:**
-```powershell
-# Install OpenCV using vcpkg
-vcpkg install opencv4[core,imgproc] --triplet x64-windows
-
-# Install LLVM for libclang
-# Download from: https://github.com/llvm/llvm-project/releases
-# Add LLVM to your PATH or set LIBCLANG_PATH environment variable
-
-# Set environment variable (in PowerShell)
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-
-# Build with OpenCV support
-cargo build --release --features opencv
-```
+**Note:** The Video Wall calibration feature uses an embedded ArUco DICT_4X4_50 dictionary that provides the same marker patterns as OpenCV. No functionality is lost by using the default build.
 
 ### Build
 
@@ -234,68 +202,27 @@ src/
 
 ## Troubleshooting
 
-### OpenCV / libclang Issues
+### OpenCV / libclang Issues (OpenCV feature currently disabled)
 
-**Error: `libclang shared library is not loaded on this thread`**
+**Note:** OpenCV support is currently disabled due to compatibility issues with OpenCV 4.13+. The Video Wall feature works perfectly using the embedded ArUco marker dictionary.
 
-This error occurs when libclang cannot be found during the OpenCV build.
-
-**Solution for macOS:**
+**Recommended solution:** Use the default build without OpenCV:
 ```bash
-# Find where libclang is installed
-brew list llvm | grep libclang
-
-# Set the environment variable (add to ~/.zshrc or ~/.bash_profile)
-# Common paths:
-export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
-# OR for specific LLVM version:
-# export LIBCLANG_PATH="/usr/local/Cellar/llvm/22.1.0/lib"
-export DYLD_LIBRARY_PATH="$LIBCLANG_PATH:$DYLD_LIBRARY_PATH"
-
-# Reload shell configuration
-source ~/.zshrc  # or source ~/.bash_profile
+cargo build --release
 ```
 
-**Solution for Linux:**
-```bash
-# Find libclang
-find /usr -name "libclang.so*" 2>/dev/null
-
-# Set the environment variable (adjust path as needed)
-export LIBCLANG_PATH="/usr/lib/llvm-14/lib"
-```
-
-**Solution for Windows:**
-```powershell
-# Set environment variable in PowerShell
-$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-
-# Or set permanently via System Properties > Environment Variables
-```
-
-**Error: `OpenCV not found`**
-
-Make sure OpenCV is installed and `pkg-config` can find it:
+The embedded dictionary provides equivalent marker detection quality. If you previously tried to build with OpenCV and are seeing errors:
 
 ```bash
-# macOS
-brew install opencv pkg-config
-pkg-config --cflags --libs opencv4
+# Clean the build cache
+cargo clean
 
-# Linux
-sudo apt-get install libopencv-dev pkg-config
-pkg-config --cflags --libs opencv4
+# Build without OpenCV
+cargo build --release
 ```
 
-**Build without OpenCV (fallback mode):**
-
-If you cannot install OpenCV, the app will work with an embedded marker dictionary:
-
-```bash
-cargo build --release --no-default-features
-```
-
-Note: Video wall calibration will use fallback marker generation which has slightly different marker patterns but is fully functional.
+**If you need OpenCV in the future:**
+OpenCV 4.13+ has API changes that are incompatible with the current `opencv` Rust crate. You would need OpenCV 4.8 or earlier, which is not easily available via Homebrew. The embedded dictionary is the recommended solution.
 
 ### NDI SDK Not Found
 
