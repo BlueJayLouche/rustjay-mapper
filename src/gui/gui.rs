@@ -139,7 +139,7 @@ impl ControlGui {
             matrix_apriltag_output_row: 0,
             matrix_apriltag_showing_pattern: false,
             // Matrix preset defaults
-            matrix_preset_name: String::new(),
+            matrix_preset_name: String::with_capacity(256),
             matrix_presets: Vec::new(),
             // Preview defaults
             input_preview_texture_id: None,
@@ -1163,15 +1163,25 @@ impl ControlGui {
         }
     }
     
-    /// Quick save matrix preset to default location
+    /// Quick save matrix preset with timestamp-based unique name
     fn quick_save_matrix_preset(&mut self) {
+        use chrono::Local;
+        
         let state = self.shared_state.lock().unwrap();
         let config = state.video_matrix_config.clone();
         drop(state);
         
-        match self.save_matrix_config_to_file("matrix_quick", &config) {
-            Ok(path) => log::info!("Saved matrix preset to {:?}", path),
-            Err(e) => log::error!("Failed to save matrix preset: {}", e),
+        // Generate unique name with timestamp: matrix_YYYYMMDD_HHMMSS
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let name = format!("matrix_{}", timestamp);
+        
+        match self.save_matrix_config_to_file(&name, &config) {
+            Ok(path) => {
+                log::info!("Quick saved matrix preset to {:?}", path);
+                // Refresh the preset list so the new preset appears
+                self.refresh_matrix_presets();
+            }
+            Err(e) => log::error!("Failed to quick save matrix preset: {}", e),
         }
     }
     
