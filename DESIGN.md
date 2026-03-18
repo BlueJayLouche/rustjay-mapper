@@ -80,8 +80,14 @@ A high-performance Rust video application for projection mapping with NDI input/
 - **Parameters**: Real-time adjustable parameters (LFOs, audio modulation)
 - **Vertex**: GPU vertex definitions for quad rendering
 
-### 2. Windowing (`src/app.rs` + `winit`)
-Dual-window application handler implementing `winit::application::ApplicationHandler`:
+### 2. Application (`src/app/` + `winit`)
+Dual-window application handler implementing `winit::application::ApplicationHandler`, split into focused sub-modules following rustjay-template conventions:
+- **`mod.rs`**: `App` struct definition, `run_app()` entry point, `toggle_fullscreen()`
+- **`commands.rs`**: `dispatch_commands()` — processes `InputCommand` and `NdiOutputCommand` each frame; `apply_input_command(slot, cmd)` helper eliminates input1/input2 duplication
+- **`update.rs`**: `update_inputs()`, `process_videowall_calibration()`, `sync_video_wall_state()`, `sync_video_matrix_state()`, `update_preview_textures()`
+- **`events.rs`**: `ApplicationHandler` impl — `resumed()`, `window_event()`, `about_to_wait()`
+
+Window roles:
 - **Output Window**: Fullscreen-capable, cursor hidden, wgpu surface
 - **Control Window**: ImGui-based UI, resizable, decorated
 
@@ -172,10 +178,11 @@ Following rustjay_waaaves pattern:
 - **Benefit**: Render loop never blocks on network I/O
 
 ### 2. Multi-Input Support
-- **Input Types**: Webcam (via nokhwa), NDI (Network Device Interface), OBS (via NDI output)
+- **Input Types**: Webcam (via nokhwa), NDI (Network Device Interface), OBS (via NDI output), Syphon (macOS GPU zero-copy)
 - **Independent Mapping**: Each input can be selected independently with its own configuration
 - **Hot Swappable**: Change inputs on the fly without restarting the application
 - **Refreshable Lists**: Device lists are cached but can be refreshed to detect new sources
+- **Command dispatch**: GUI writes an `InputCommand` variant into `SharedState.input1_command` / `input2_command`; `App::apply_input_command(slot, cmd)` processes both slots with a single code path
 
 ### 3. Bounded Frame Queues
 - **Input Queue**: Capacity 5, drops oldest when full (latest-frame semantics)
@@ -214,38 +221,57 @@ fn toggle_fullscreen(&mut self) {
 ## File Structure
 
 ```
- rusty_mapper/
+rusty_mapper/
 ├── Cargo.toml
+├── build.rs                  # macOS rpath setup: Syphon + NDI (NDI_SDK_DIR / SYPHON_FRAMEWORK_DIR)
 ├── DESIGN.md                 # This document
 ├── src/
-│   ├── main.rs              # Entry point, event loop
-│   ├── app.rs               # Application handler (dual window)
-│   ├── config.rs            # Configuration loading
+│   ├── main.rs               # Entry point
+│   ├── app/
+│   │   ├── mod.rs            # App struct, run_app(), toggle_fullscreen()
+│   │   ├── commands.rs       # dispatch_commands(), apply_input_command(slot, cmd)
+│   │   ├── update.rs         # update_inputs(), calibration sync, preview textures
+│   │   └── events.rs         # ApplicationHandler impl (resumed, window_event, about_to_wait)
+│   ├── config.rs             # Configuration loading
 │   ├── core/
-│   │   ├── mod.rs           # Core module exports
-│   │   ├── state.rs         # SharedState definition
-│   │   └── vertex.rs        # GPU vertex types
-│   ├── input/               # Input management (NEW)
-│   │   ├── mod.rs           # InputManager, InputSource
-│   │   ├── ndi.rs           # NDI receiver
-│   │   └── webcam.rs        # Webcam capture (optional)
+│   │   ├── mod.rs            # Core module exports
+│   │   ├── state.rs          # SharedState, InputCommand, NdiOutputCommand
+│   │   └── vertex.rs         # GPU vertex types
+│   ├── input/
+│   │   ├── mod.rs            # InputManager, InputType
+│   │   ├── ndi.rs            # NDI receiver
+│   │   ├── syphon_input.rs   # Syphon input (macOS only)
+│   │   └── webcam.rs         # Webcam capture (optional feature)
 │   ├── ndi/
-│   │   ├── mod.rs           # NDI module exports
-│   │   └── output.rs        # NdiOutputSender (output thread)
+│   │   ├── mod.rs            # NDI module exports
+│   │   └── output.rs         # NdiOutputSender (dedicated output thread)
+│   ├── output/
+│   │   ├── mod.rs            # Output module exports
+│   │   └── syphon.rs         # Syphon output (macOS only)
 │   ├── engine/
-│   │   ├── mod.rs           # Engine exports
-│   │   ├── renderer.rs      # Main wgpu renderer
-│   │   ├── texture.rs       # Texture utilities
-│   │   └── shaders/
-│   │       └── main.wgsl    # Main shader
+│   │   ├── mod.rs            # Engine exports
+│   │   ├── renderer.rs       # Main wgpu renderer + pipeline
+│   │   └── texture.rs        # Texture utilities
 │   ├── gui/
-│   │   ├── mod.rs           # GUI exports
-│   │   ├── gui.rs           # ImGui setup with input selection
-│   │   └── renderer.rs      # ImGui wgpu renderer
+│   │   ├── mod.rs            # GUI exports
+│   │   ├── gui.rs            # ImGui control interface (tabs: Inputs, Mapping, Matrix, Output, Settings)
+│   │   └── renderer.rs       # ImGui wgpu renderer
+│   ├── videowall/            # Video wall + matrix subsystem (~6,000 LOC)
+│   │   ├── mod.rs
+│   │   ├── calibration.rs    # State machine calibration controller
+│   │   ├── apriltag.rs       # AprilTag detection (pure Rust)
+│   │   ├── apriltag_auto_detect.rs
+│   │   ├── aruco.rs          # ArUco detection
+│   │   ├── quad_mapper.rs
+│   │   ├── grid_mapping.rs
+│   │   ├── matrix_renderer.rs
+│   │   ├── renderer.rs
+│   │   ├── config.rs
+│   │   └── test_pattern.rs
 │   └── audio/
-│       ├── mod.rs           # Audio exports
-│       └── input.rs         # Audio capture + FFT
-└── config.toml              # Runtime configuration
+│       ├── mod.rs            # Audio exports
+│       └── input.rs          # cpal capture + 8-band FFT
+└── config.toml               # Runtime configuration
 ```
 
 ---
@@ -290,6 +316,19 @@ env_logger = "0.11"
 anyhow = "1.0"
 thiserror = "2.0"
 ```
+
+---
+
+## Build Configuration (`build.rs`)
+
+On macOS, `build.rs` embeds runtime rpaths so both Syphon and NDI dylibs are found by `dyld`:
+
+| Library | Discovery | Env var override |
+|---------|-----------|-----------------|
+| `Syphon.framework` | `<workspace>/../crates/syphon/syphon-lib/` | `SYPHON_FRAMEWORK_DIR` |
+| `libndi.dylib` | Probes standard SDK install paths (e.g. `/Library/NDI SDK for Apple/lib/macOS`) | `NDI_SDK_DIR` |
+
+`@executable_path` and `@loader_path` entries are also added to support bundled app deployments.
 
 ---
 

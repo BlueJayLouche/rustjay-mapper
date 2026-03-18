@@ -7,7 +7,7 @@
 #![allow(deprecated)]
 
 use crate::config::AppConfig;
-use crate::core::{SharedState, NdiOutputCommand, InputChangeRequest, InputMapping};
+use crate::core::{SharedState, NdiOutputCommand, InputCommand, InputMapping};
 use crate::videowall::{CalibrationController, CalibrationPhase, CalibrationStatus, GridSize, PresetManager, ConfigPreset,
     VideoMatrixConfig, InputGridConfig, GridCellMapping, GridPosition, AspectRatio, Orientation,
     AprilTagAutoDetector, AprilTagGenerator, AprilTagFamily, AutoDetectConfig, TagPlacement,
@@ -673,9 +673,9 @@ impl ControlGui {
             if ui.button(format!("Stop##{}", input_num)) {
                 let mut state = self.shared_state.lock().unwrap();
                 if input_num == 1 {
-                    state.input1_request = InputChangeRequest::StopInput;
+                    state.input1_command = InputCommand::StopInput;
                 } else {
-                    state.input2_request = InputChangeRequest::StopInput;
+                    state.input2_command = InputCommand::StopInput;
                 }
             }
             
@@ -1414,7 +1414,7 @@ impl ControlGui {
     /// Select webcam for input
     fn select_webcam(&mut self, input_num: i32, device_index: usize) {
         let mut state = self.shared_state.lock().unwrap();
-        let request = InputChangeRequest::StartWebcam {
+        let request = InputCommand::StartWebcam {
             device_index,
             width: 1920,
             height: 1080,
@@ -1422,9 +1422,9 @@ impl ControlGui {
         };
         
         if input_num == 1 {
-            state.input1_request = request;
+            state.input1_command = request;
         } else {
-            state.input2_request = request;
+            state.input2_command = request;
         }
         
         log::info!("Selected webcam {} for input {}", device_index, input_num);
@@ -1433,12 +1433,12 @@ impl ControlGui {
     /// Select NDI source for input
     fn select_ndi(&mut self, input_num: i32, source_name: String) {
         let mut state = self.shared_state.lock().unwrap();
-        let request = InputChangeRequest::StartNdi { source_name: source_name.clone() };
+        let request = InputCommand::StartNdi { source_name: source_name.clone() };
         
         if input_num == 1 {
-            state.input1_request = request;
+            state.input1_command = request;
         } else {
-            state.input2_request = request;
+            state.input2_command = request;
         }
         
         log::info!("Selected NDI source '{}' for input {}", source_name, input_num);
@@ -1447,12 +1447,12 @@ impl ControlGui {
     /// Select OBS source for input
     fn select_obs(&mut self, input_num: i32, source_name: String) {
         let mut state = self.shared_state.lock().unwrap();
-        let request = InputChangeRequest::StartObs { source_name: source_name.clone() };
+        let request = InputCommand::StartObs { source_name: source_name.clone() };
         
         if input_num == 1 {
-            state.input1_request = request;
+            state.input1_command = request;
         } else {
-            state.input2_request = request;
+            state.input2_command = request;
         }
         
         log::info!("Selected OBS source '{}' for input {}", source_name, input_num);
@@ -1462,12 +1462,12 @@ impl ControlGui {
     #[cfg(target_os = "macos")]
     fn select_syphon(&mut self, input_num: i32, server_name: String) {
         let mut state = self.shared_state.lock().unwrap();
-        let request = InputChangeRequest::StartSyphon { server_name: server_name.clone() };
+        let request = InputCommand::StartSyphon { server_name: server_name.clone() };
         
         if input_num == 1 {
-            state.input1_request = request;
+            state.input1_command = request;
         } else {
-            state.input2_request = request;
+            state.input2_command = request;
         }
         
         log::info!("Selected Syphon server '{}' for input {}", server_name, input_num);

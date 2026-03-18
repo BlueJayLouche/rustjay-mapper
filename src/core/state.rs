@@ -149,7 +149,7 @@ impl InputMapping {
 
 /// Commands for input changes
 #[derive(Debug, Clone, PartialEq)]
-pub enum InputChangeRequest {
+pub enum InputCommand {
     None,
     StartWebcam { 
         device_index: usize, 
@@ -181,8 +181,8 @@ pub struct SharedState {
     // NDI Input
     pub ndi_input1: NdiInputState,
     pub ndi_input2: NdiInputState,
-    pub input1_request: InputChangeRequest,
-    pub input2_request: InputChangeRequest,
+    pub input1_command: InputCommand,
+    pub input2_command: InputCommand,
     
     // NDI Output
     pub ndi_output: NdiOutputState,
@@ -259,8 +259,8 @@ impl SharedState {
                 height: 1080,
                 fps: 60.0,
             },
-            input1_request: InputChangeRequest::None,
-            input2_request: InputChangeRequest::None,
+            input1_command: InputCommand::None,
+            input2_command: InputCommand::None,
             
             ndi_output: NdiOutputState {
                 stream_name: "RustyMapper Output".to_string(),

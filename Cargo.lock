@@ -3567,6 +3567,7 @@ dependencies = [
 name = "syphon-core"
 version = "0.1.0"
 dependencies = [
+ "block",
  "cocoa 0.25.0",
  "core-foundation 0.9.4",
  "core-graphics 0.23.2",
