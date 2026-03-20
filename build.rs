@@ -8,7 +8,7 @@ fn main() {
         let syphon_framework_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| {
-                let candidate = p.join("crates/syphon/syphon-lib");
+                let candidate = p.join("syphon-rs/syphon-lib");
                 if candidate.join("Syphon.framework").exists() {
                     Some(candidate)
                 } else {
@@ -20,7 +20,7 @@ fn main() {
             })
             .expect(
                 "Syphon.framework not found. Set SYPHON_FRAMEWORK_DIR to the directory \
-                 containing Syphon.framework, or place it at <workspace>/../crates/syphon/syphon-lib/",
+                 containing Syphon.framework, or place it at <workspace>/../syphon-rs/syphon-lib/",
             );
 
         let syphon_dir = syphon_framework_dir.to_string_lossy().into_owned();
