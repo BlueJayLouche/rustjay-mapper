@@ -69,8 +69,8 @@ apriltag = "0.4.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Syphon (macOS GPU texture sharing)
-syphon-core = { path = "../crates/syphon/syphon-core" }
-syphon-wgpu = { path = "../crates/syphon/syphon-wgpu" }
+syphon-core = { path = "../syphon-rs/syphon-core" }
+syphon-wgpu = { path = "../syphon-rs/syphon-wgpu" }
 metal = "0.29"
 cocoa = "0.25"
 objc = "0.2"
