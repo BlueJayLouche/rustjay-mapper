@@ -1,11 +1,11 @@
 [package]
-name = "rusty_mapper"
+name = "rustjay-mapper"
 version = "0.1.0"
 edition = "2021"
-authors = ["VJ Developer"]
+authors = ["BlueJayLouche <bluejaylouche@gmail.com>"]
 description = "High-performance projection mapping application with NDI input/output"
 license = "MIT"
-repository = "https://github.com/yourusername/rusty_mapper"
+repository = "https://github.com/BlueJayLouche/rustjay-mapper"
 keywords = ["projection-mapping", "ndi", "video", "wgpu", "real-time"]
 categories = ["graphics", "multimedia"]
 
