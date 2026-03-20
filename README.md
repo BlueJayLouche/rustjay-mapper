@@ -1,4 +1,4 @@
-# Rusty Mapper
+# RustJay Mapper
 
 A high-performance projection mapping application in Rust with NDI input/output and GPU-accelerated rendering.
 
@@ -128,6 +128,22 @@ set LIBCLANG_PATH=C:\Program Files\LLVM\bin
 cargo run --release --features opencv
 ```
 
+### Syphon Support (macOS Only)
+
+Syphon is enabled automatically on macOS. The build system finds the framework at `../syphon-rs/syphon-lib/Syphon.framework`.
+
+**Requirements:** The `syphon-rs` repo must be present as a sibling directory:
+```
+developer/rust/
+├── syphon-rs/          ← must exist
+└── rustjay-mapper/
+```
+
+If your layout differs:
+```bash
+SYPHON_FRAMEWORK_DIR=/path/to/syphon-rs/syphon-lib cargo build --release
+```
+
 ## Usage
 
 1. **Start the application** - Two windows will appear:
@@ -237,6 +253,12 @@ export NDI_SDK_DIR="/path/to/NDI/sdk"
 # Windows
 set NDI_SDK_DIR=C:\Program Files\NDI\NDI 5 SDK
 ```
+
+### Syphon Framework Not Found
+
+If you see `dyld: Library not loaded: Syphon.framework`:
+1. Verify: `ls ../syphon-rs/syphon-lib/Syphon.framework`
+2. Override: `SYPHON_FRAMEWORK_DIR=/path/to/syphon-rs/syphon-lib cargo build --release`
 
 ## License
 
