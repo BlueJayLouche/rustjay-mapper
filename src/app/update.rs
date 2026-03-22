@@ -7,6 +7,19 @@ impl App {
         let Some(ref mut manager) = self.input_manager else { return };
         manager.update();
 
+        // Collect async discovery results and surface them to SharedState so the
+        // GUI can read them without touching InputManager directly.
+        if manager.poll_discovery() {
+            let mut state = self.shared_state.lock().unwrap();
+            state.discovered_webcams = manager.get_webcam_devices().to_vec();
+            state.discovered_ndi_sources = manager.get_ndi_sources().to_vec();
+            state.discovering_devices = false;
+        } else {
+            // Keep the "busy" flag in sync.
+            let mut state = self.shared_state.lock().unwrap();
+            state.discovering_devices = manager.is_discovering();
+        }
+
         let calibration_waiting = {
             let state = self.shared_state.lock().unwrap();
             state.videowall_calibration.as_ref()

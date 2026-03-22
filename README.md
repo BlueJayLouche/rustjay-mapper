@@ -1,49 +1,53 @@
 # RustJay Mapper
 
-A high-performance projection mapping application in Rust with NDI input/output and GPU-accelerated rendering.
+A high-performance projection mapping application in Rust with GPU-accelerated rendering, NDI and Syphon I/O, and AprilTag-based video wall calibration.
 
 ## Features
 
-- **Multiple Input Types**:
-  - **Webcam**: Direct camera capture via nokhwa
-  - **NDI**: Network Device Interface sources
-  - **OBS**: OBS Studio output via NDI plugin
-- **Independent Input Mapping**: Each input slot can have different source type
-- **Refreshable Device Lists**: Hot-swap inputs without restart
-- **NDI Input/Output**: Full NDI support with dedicated threads for low-latency video streaming
-- **Dual Window Architecture**: 
+- **Multiple Input Types**
+  - **Webcam** — direct camera capture via nokhwa
+  - **NDI** — Network Device Interface sources (including OBS via NDI plugin)
+  - **Syphon** — macOS GPU texture sharing (Resolume, TouchDesigner, etc.)
+- **Independent Dual Inputs** — each slot can use a different source type; hot-swappable without restart
+- **GPU-Accelerated Rendering** — wgpu pipeline with configurable internal resolution
+- **Dual Window Architecture**
   - Fullscreen output window with hidden cursor for clean projection
-  - Control window with ImGui-based interface
-- **GPU Acceleration**: wgpu-based rendering for cross-platform support
-- **Projection Mapping**: Corner pinning with bilinear interpolation for quad warping
-- **Transform Controls**: Per-input scale, offset, and rotation
-- **Blend Modes**: Normal (mix), Add, Multiply, Screen blending
-- **Visual GUI**: Preview-centric interface with source/output previews and overlayed display boxes
-- **Video Wall Support**: Auto-calibration for HDMI matrix walls via ArUco markers
-  - Static pattern calibration (all markers shown simultaneously)
-  - Per-display adjustments (brightness, contrast, gamma)
-  - Manual corner adjustment (drag-to-move)
+  - Separate ImGui control window
+- **Projection Mapping** — corner pinning, bilinear interpolation, per-input scale/offset/rotation
+- **Blend Modes** — Normal (mix), Add, Multiply, Screen
+- **Video Matrix / Grid Mapping**
+  - Subdivide a single HDMI output into an N x M grid for multi-display walls
+  - Per-cell aspect ratio, orientation, and output position mapping
+  - AprilTag auto-detection of screen layout from a photo or live input
   - Named preset save/load
-- **Local Sharing**: Syphon/Spout/v4l2loopback for inter-app video sharing
-- **Configurable Resolution**: Internal rendering resolution independent of window size
+- **AprilTag Calibration**
+  - Runtime marker generation via the apriltag C library (all 587 tag36h11 markers available — no pre-generated files required)
+  - Pattern display adapts to the user's configured grid size
+  - Pure Rust detection with aspect ratio and orientation inference
+- **Output**
+  - NDI output with dedicated sender thread
+  - Syphon output (macOS) for zero-copy GPU sharing
+- **Audio Reactive** — optional cpal audio input with 8-band FFT
 
 ## Architecture
 
-See [DESIGN.md](DESIGN.md) for detailed architecture documentation.
+See [DESIGN.md](DESIGN.md) for the full architecture document.
 
 ### Design Documents
 
-- [DESIGN_GUI_LAYOUT.md](DESIGN_GUI_LAYOUT.md) - Visual GUI layout with source/output previews
-- [DESIGN_VIDEOWALL.md](DESIGN_VIDEOWALL.md) - Video wall auto-calibration using ArUco markers
-- [DESIGN_LOCAL_OUTPUT.md](DESIGN_LOCAL_OUTPUT.md) - Local video output (Syphon/Spout/v4l2loopback)
-- [DESIGN_LOCAL_INPUT.md](DESIGN_LOCAL_INPUT.md) - Local video input (Syphon/Spout/v4l2loopback)
+| Document | Description |
+|----------|-------------|
+| [DESIGN.md](DESIGN.md) | Architecture, modules, threading, data flow |
+| [DESIGN_GUI_LAYOUT.md](DESIGN_GUI_LAYOUT.md) | Visual GUI layout specification |
+| [DESIGN_LOCAL_OUTPUT.md](DESIGN_LOCAL_OUTPUT.md) | Local video output design (Syphon/Spout/v4l2loopback) |
+| [DESIGN_LOCAL_INPUT.md](DESIGN_LOCAL_INPUT.md) | Local video input design (Syphon/Spout/v4l2loopback) |
 
 ```
 ┌─────────────────┐      ┌─────────────────────┐
-│  Control Window │      │   Output Window     │
-│   (ImGui UI)    │      │  (Fullscreen, No    │
-│                 │      │   Cursor)           │
-└────────┬────────┘      └──────────┬──────────┘
+│  Control Window │      │   Output Window      │
+│   (ImGui UI)    │      │  (Fullscreen, No     │
+│                 │      │   Cursor)            │
+└────────┬────────┘      └──────────┬───────────┘
          │                          │
          └──────────┬───────────────┘
                     │
@@ -52,12 +56,12 @@ See [DESIGN.md](DESIGN.md) for detailed architecture documentation.
            │  (GPU Render)   │
            └────────┬────────┘
                     │
-        ┌───────────┴───────────┐
-        │                       │
-┌───────▼────────┐      ┌───────▼────────┐
-│  NDI Input     │      │  NDI Output    │
-│   Thread       │      │   Thread       │
-└────────────────┘      └────────────────┘
+        ┌───────────┼───────────┐
+        │           │           │
+┌───────▼──────┐ ┌──▼───────┐ ┌▼──────────────┐
+│  NDI Input   │ │ Syphon   │ │  NDI / Syphon  │
+│   Thread     │ │ Input    │ │  Output        │
+└──────────────┘ └──────────┘ └────────────────┘
 ```
 
 ## Building
@@ -65,48 +69,18 @@ See [DESIGN.md](DESIGN.md) for detailed architecture documentation.
 ### Requirements
 
 - Rust 1.70+
-- NDI SDK (for NDI support)
-- OpenCV 4.x + libclang (optional, for enhanced ArUco marker detection)
-- macOS, Linux, or Windows
+- macOS (primary platform; Linux/Windows possible with reduced feature set)
+- NDI SDK — [download from ndi.video](https://ndi.video/tools-sdk/)
+- Syphon framework (macOS) — provided by `syphon-rs` sibling repo
 
-### Optional Dependencies
+### Standard Build
 
-#### OpenCV (NOT CURRENTLY SUPPORTED)
-
-**Status:** OpenCV 4.13+ has compatibility issues with the `opencv` Rust crate. The Video Wall feature works perfectly without OpenCV using the embedded ArUco marker dictionary.
-
-**Recommendation:** Use the default build without OpenCV. The embedded dictionary provides equivalent marker detection quality.
-
-If you need OpenCV support in the future, you would need to install OpenCV 4.8 or earlier:
-
-**macOS (OpenCV 4.8 - NOT recommended due to compatibility):**
-```bash
-# Install older OpenCV version
-brew install opencv@4
-
-# Set environment variables
-export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
-export DYLD_LIBRARY_PATH="$LIBCLANG_PATH:$DYLD_LIBRARY_PATH"
-
-# Build with OpenCV support (feature currently disabled)
-# cargo build --release --features opencv
-```
-
-**Note:** The Video Wall calibration feature uses an embedded ArUco DICT_4X4_50 dictionary that provides the same marker patterns as OpenCV. No functionality is lost by using the default build.
-
-### Build
-
-**Standard build (without OpenCV):**
 ```bash
 cargo build --release
 ```
 
-**Build with all features (OpenCV + webcam):**
-```bash
-cargo build --release --features "opencv webcam"
-```
+### Build Without Webcam Support
 
-**Build without default features (minimal):**
 ```bash
 cargo build --release --no-default-features
 ```
@@ -117,73 +91,66 @@ cargo build --release --no-default-features
 cargo run --release
 ```
 
-**Run with OpenCV features:**
-```bash
-# macOS/Linux
-export LIBCLANG_PATH="/usr/local/opt/llvm/lib"
-cargo run --release --features opencv
-
-# Windows
-set LIBCLANG_PATH=C:\Program Files\LLVM\bin
-cargo run --release --features opencv
-```
-
-### Syphon Support (macOS Only)
+### Syphon Setup (macOS)
 
 Syphon is enabled automatically on macOS. The build system finds the framework at `../syphon-rs/syphon-lib/Syphon.framework`.
 
-**Requirements:** The `syphon-rs` repo must be present as a sibling directory:
+The `syphon-rs` repo must be present as a sibling directory:
+
 ```
 developer/rust/
 ├── syphon-rs/          ← must exist
+│   └── syphon-lib/
+│       └── Syphon.framework
 └── rustjay-mapper/
 ```
 
-If your layout differs:
+If your layout differs, override the path:
+
 ```bash
 SYPHON_FRAMEWORK_DIR=/path/to/syphon-rs/syphon-lib cargo build --release
 ```
 
+### NDI Setup
+
+The build system probes standard macOS SDK install paths (e.g. `/Library/NDI SDK for Apple/lib/macOS`). Override with:
+
+```bash
+NDI_SDK_DIR=/path/to/ndi/sdk cargo build --release
+```
+
 ## Usage
 
-1. **Start the application** - Two windows will appear:
-   - Output window (main display)
-   - Control window (settings)
+1. **Start the application** — two windows appear: the output window and the control window.
 
-2. **Select Input Sources** (Inputs tab):
-   - Click "Select Source" for Input 1 or Input 2
-   - Choose from Webcam, NDI, or OBS tabs
-   - Click "Refresh" to detect new sources
+2. **Inputs tab** — select source type (Webcam, NDI, Syphon) for Input 1 and Input 2. Click Refresh to detect new sources.
 
-3. **Configure Mapping** (Mapping tab):
-   - Select Input 1 or Input 2 to map
-   - Adjust corner positions for projection mapping
-   - Set scale, offset, and rotation
-   - Choose blend mode and opacity
+3. **Mapping tab** — adjust corner pinning, scale, offset, rotation, blend mode, and opacity per input.
 
-4. **Start NDI Output** (Output tab):
-   - Enter a stream name
-   - Click "Start NDI Output"
+4. **Matrix tab** — configure an N x M grid for video wall output:
+   - Set grid dimensions (e.g. 3x3, 4x4)
+   - Click **Show AprilTag Pattern** to display calibration markers on all grid cells
+   - Use **Load from Photo** or **Auto-Detect from Current Input** to automatically detect screen positions and aspect ratios
+   - Fine-tune cell-to-output mappings manually if needed
 
-5. **Toggle Fullscreen**:
-   - Press `Shift+F` in the output window
-   - Or use the checkbox in the Output tab
+5. **Output tab** — start NDI or Syphon output, toggle fullscreen.
 
-6. **Exit**:
-   - Press `Escape` in the output window
-   - Or close either window
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Shift+F` | Toggle fullscreen (output window) |
+| `Escape` | Exit |
 
 ### OBS Integration
 
-To use OBS as an input source:
-1. Install OBS NDI plugin: https://github.com/obs-ndi/obs-ndi
-2. In OBS: Tools → NDI Output Settings → Enable
-3. In Rusty Mapper: Select "OBS" tab in input selector
-4. Choose your OBS NDI source
+1. Install the OBS NDI plugin
+2. In OBS: Tools > NDI Output Settings > Enable
+3. In RustJay Mapper: select the OBS NDI source in the Inputs tab
 
 ## Configuration
 
-Edit `config.toml` to customize:
+Edit `config.toml`:
 
 ```toml
 [output_window]
@@ -202,63 +169,70 @@ internal_height = 1080
 
 ```
 src/
-├── main.rs          # Entry point
-├── app.rs           # Dual-window application handler
-├── config.rs        # Configuration loading
-├── core/            # Core types and shared state
-├── input/           # Input management (webcam, NDI, OBS)
-│   ├── mod.rs       # InputManager, InputSource
-│   ├── ndi.rs       # NDI receiver
-│   └── webcam.rs    # Webcam capture
-├── ndi/             # NDI output
-├── engine/          # wgpu rendering engine
-├── gui/             # ImGui control interface
-└── audio/           # Audio input (optional)
+├── main.rs                # Entry point
+├── lib.rs                 # Library crate root
+├── config.rs              # TOML configuration loading
+├── app/
+│   ├── mod.rs             # App struct, run_app(), toggle_fullscreen()
+│   ├── commands.rs        # Input/output command dispatch
+│   ├── update.rs          # Per-frame updates, matrix pattern sync
+│   └── events.rs          # winit ApplicationHandler impl
+├── core/
+│   ├── state.rs           # SharedState (thread-safe shared state)
+│   └── vertex.rs          # GPU vertex types
+├── engine/
+│   ├── renderer.rs        # wgpu render pipeline, blit, AprilTag pattern display
+│   └── texture.rs         # Texture utilities
+├── gui/
+│   ├── gui.rs             # ImGui control interface
+│   └── renderer.rs        # ImGui wgpu backend
+├── input/
+│   ├── mod.rs             # InputManager, InputSource
+│   ├── ndi.rs             # NDI receiver
+│   ├── syphon_input.rs    # Syphon input (macOS)
+│   └── webcam.rs          # Webcam capture (optional)
+├── ndi/
+│   └── output.rs          # NDI sender thread
+├── output/
+│   ├── mod.rs             # OutputManager (NDI + Syphon)
+│   ├── syphon.rs          # Syphon output (macOS)
+│   └── readback.rs        # GPU readback for CPU-based outputs
+├── audio/
+│   └── input.rs           # cpal capture + 8-band FFT
+└── videowall/
+    ├── apriltag.rs         # AprilTag detector + runtime marker generator
+    ├── apriltag_auto_detect.rs  # Auto-detection of screen layout
+    ├── aruco.rs            # Legacy ArUco dictionary (fallback)
+    ├── calibration.rs      # Calibration state machine
+    ├── grid_mapping.rs     # Grid subdivision + cell mapping
+    ├── matrix_renderer.rs  # Video matrix GPU renderer
+    ├── renderer.rs         # Video wall GPU renderer
+    ├── quad_mapper.rs      # Quad warping utilities
+    ├── config.rs           # Video wall serialisation
+    └── test_pattern.rs     # Test pattern generator
 ```
 
 ## Troubleshooting
 
-### OpenCV / libclang Issues (OpenCV feature currently disabled)
-
-**Note:** OpenCV support is currently disabled due to compatibility issues with OpenCV 4.13+. The Video Wall feature works perfectly using the embedded ArUco marker dictionary.
-
-**Recommended solution:** Use the default build without OpenCV:
-```bash
-cargo build --release
-```
-
-The embedded dictionary provides equivalent marker detection quality. If you previously tried to build with OpenCV and are seeing errors:
-
-```bash
-# Clean the build cache
-cargo clean
-
-# Build without OpenCV
-cargo build --release
-```
-
-**If you need OpenCV in the future:**
-OpenCV 4.13+ has API changes that are incompatible with the current `opencv` Rust crate. You would need OpenCV 4.8 or earlier, which is not easily available via Homebrew. The embedded dictionary is the recommended solution.
-
-### NDI SDK Not Found
-
-Download and install the NDI SDK from:
-https://ndi.video/tools-sdk/
-
-After installation, you may need to set:
-```bash
-# macOS/Linux
-export NDI_SDK_DIR="/path/to/NDI/sdk"
-
-# Windows
-set NDI_SDK_DIR=C:\Program Files\NDI\NDI 5 SDK
-```
-
 ### Syphon Framework Not Found
 
 If you see `dyld: Library not loaded: Syphon.framework`:
-1. Verify: `ls ../syphon-rs/syphon-lib/Syphon.framework`
-2. Override: `SYPHON_FRAMEWORK_DIR=/path/to/syphon-rs/syphon-lib cargo build --release`
+
+1. Verify the framework exists: `ls ../syphon-rs/syphon-lib/Syphon.framework`
+2. Override the path: `SYPHON_FRAMEWORK_DIR=/path/to/dir cargo build --release`
+
+### NDI SDK Not Found
+
+Install the NDI SDK from [ndi.video](https://ndi.video/tools-sdk/), then:
+
+```bash
+export NDI_SDK_DIR="/path/to/NDI/sdk"
+cargo build --release
+```
+
+### AprilTag Pattern Not Displaying
+
+Markers are generated at runtime via the apriltag C library — no PNG files on disk are required. If the pattern still doesn't appear, check the log output for errors (run with `RUST_LOG=info`).
 
 ## License
 

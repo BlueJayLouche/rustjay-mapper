@@ -13,8 +13,8 @@ vsync = true
 fps = 60
 
 [control_window]
-width = 400
-height = 600
+width = 1280
+height = 720
 title = "Rusty Mapper Control"
 
 [resolution]

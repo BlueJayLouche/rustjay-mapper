@@ -147,14 +147,14 @@ impl Orientation {
     /// Detect orientation from marker corners
     /// 
     /// AprilTag library returns corners in image coordinates (Y increases downward):
-    /// [0]=top-right, [1]=top-left, [2]=bottom-left, [3]=bottom-right
-    /// The top edge goes from corners[1] (top-left) to corners[0] (top-right)
+    /// [0]=left-bottom, [1]=right-bottom, [2]=right-top, [3]=left-top
+    /// The top edge goes from corners[3] (left-top) to corners[2] (right-top)
     pub fn detect_from_corners(corners: &[[f32; 2]; 4]) -> Self {
-        // Calculate the orientation from the top edge (corners[1] to corners[0])
+        // Calculate the orientation from the top edge (corners[3] to corners[2])
         // This is left-to-right in a normal (non-rotated) tag
         let top_edge = Vec2::new(
-            corners[0][0] - corners[1][0],  // TR.x - TL.x
-            corners[0][1] - corners[1][1],  // TR.y - TL.y
+            corners[2][0] - corners[3][0],  // RT.x - LT.x
+            corners[2][1] - corners[3][1],  // RT.y - LT.y
         );
         
         let angle = top_edge.y.atan2(top_edge.x);

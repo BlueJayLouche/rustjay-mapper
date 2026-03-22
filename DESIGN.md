@@ -1,14 +1,14 @@
-# Rusty Mapper - Design Document
+# RustJay Mapper - Design Document
 
 ## Overview
 
-A high-performance Rust video application for projection mapping with NDI input/output, dual-window architecture (preview/control + fullscreen output), and GPU-accelerated rendering via wgpu.
+A high-performance Rust video application for projection mapping with NDI and Syphon I/O, dual-window architecture (preview/control + fullscreen output), and GPU-accelerated rendering via wgpu.
 
 ## Goals
 
 - **High Performance**: 60fps+ rendering with minimal latency
 - **Dual Window Architecture**: Control window for UI, fullscreen output window with hidden cursor
-- **NDI Integration**: Both input (receive) and output (send) with dedicated threads
+- **NDI + Syphon Integration**: Both input (receive) and output (send) with dedicated threads
 - **Cross-Platform**: macOS primary, with Linux/Windows support potential
 - **Projection Mapping Ready**: Fullscreen output, cursor hiding, configurable resolutions
 
@@ -20,21 +20,21 @@ A high-performance Rust video application for projection mapping with NDI input/
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           RUSTY MAPPER                                       │
+│                         RUSTJAY MAPPER                                       │
 │                                                                              │
 │  ┌─────────────────────┐      ┌─────────────────────────────────────────┐   │
 │  │   CONTROL WINDOW    │      │          OUTPUT WINDOW                   │   │
 │  │  (imgui + preview)  │      │      (Fullscreen, No Cursor)             │   │
 │  │                     │      │                                          │   │
 │  │  ┌───────────────┐  │      │  ┌────────────────────────────────────┐  │   │
-│  │  │ NDI Source    │  │      │  │       RENDER PIPELINE               │  │   │
+│  │  │ Source        │  │      │  │       RENDER PIPELINE               │  │   │
 │  │  │ Selector      │  │      │  │  ┌──────────┐ ┌──────────┐         │  │   │
-│  │  ├───────────────┤  │      │  │  │  Input   │ │ Effects │         │  │   │
-│  │  │ Preview       │  │◄─────┼──┼──┤ Processor│ │  Stage  │         │  │   │
+│  │  ├───────────────┤  │      │  │  │  Input   │ │ Effects  │         │  │   │
+│  │  │ Preview       │  │◄─────┼──┼──┤ Processor│ │  Stage   │         │  │   │
 │  │  │ (320x180)     │  │      │  │  └────┬─────┘ └────┬─────┘         │  │   │
 │  │  ├───────────────┤  │      │  │       └────────────┘                │  │   │
 │  │  │ Output Ctrl   │  │      │  │            ↓                        │  │   │
-│  │  │ (NDI/Window)  │  │      │  │  ┌──────────────────────┐           │  │   │
+│  │  │ (NDI/Syphon)  │  │      │  │  ┌──────────────────────┐           │  │   │
 │  │  └───────────────┘  │      │  │  │    Output Mixer      │           │  │   │
 │  │                     │      │  │  │  (Projection Mapped) │           │  │   │
 │  │  ┌───────────────┐  │      │  │  └──────────┬───────────┘           │  │   │
@@ -43,31 +43,26 @@ A high-performance Rust video application for projection mapping with NDI input/
 │  │  └───────────────┘  │      │  └────────────────────────────────────┘  │   │
 │  └─────────────────────┘      └─────────────────────────────────────────┘   │
 │           ▲                              │                                  │
-│           │                              │                                  │
 │           │         ┌────────────────────┴────────────────┐                 │
 │           │         │           SHARED STATE               │                 │
-│           │         │  (Parameters, Audio, NDI Sources)    │                 │
+│           │         │  (Parameters, Audio, Sources)        │                 │
 │           │         └───────────────────────────────────────┘                 │
 │           │                                                                   │
 │  ┌────────┴─────────────────────────┐     ┌──────────────────────────────┐  │
-│  │      NDI INPUT THREAD            │     │    NDI OUTPUT THREAD         │  │
-│  │  ┌────────────┐  ┌─────────────┐ │     │  ┌────────────────────────┐  │  │
-│  │  │ Receiver   │──│ Frame Queue │ │     │  │   Frame Queue (2)      │  │  │
-│  │  │ (BGRA→RGBA)│  │ (latest-only)│     │  │                        │  │  │
-│  │  └────────────┘  └──────┬──────┘ │     │  │  ┌──────────┐ ┌──────┐ │  │  │
-│  │                         │        │     │  │  │ Sender   │ │ NDI  │ │  │  │
-│  └─────────────────────────┘        │     │  │  │ (RGBA→   │ │ Send │ │  │  │
-│                                     │     │  │  │  BGRA)   │ │      │ │  │  │
-│                                     │     │  │  └──────────┘ └──────┘ │  │  │
-│                                     │     │  └────────────────────────┘  │  │
-│                                     │     └──────────────────────────────┘  │
-│                                     │                                        │
-│  ┌─────────────────────────────────┴──────────────┐                         │
-│  │              AUDIO INPUT                         │                         │
-│  │  ┌────────────┐  ┌─────────────┐  ┌──────────┐ │                         │
-│  │  │ cpal Input │──│ FFT (8-band)│──│ Shared   │─┘                         │
-│  │  └────────────┘  └─────────────┘  │   State  │                            │
-│  └───────────────────────────────────┴──────────┘                            │
+│  │   NDI / SYPHON INPUT THREADS    │     │  NDI / SYPHON OUTPUT THREADS │  │
+│  │  ┌────────────┐  ┌────────────┐ │     │  ┌────────────┐ ┌──────────┐ │  │
+│  │  │ NDI Recv   │  │ Syphon In  │ │     │  │ NDI Send   │ │ Syphon   │ │  │
+│  │  │ (BGRA→RGBA)│  │ (GPU zero  │ │     │  │ (RGBA→BGRA)│ │ Out      │ │  │
+│  │  │            │  │  copy)     │ │     │  │            │ │ (GPU)    │ │  │
+│  │  └────────────┘  └────────────┘ │     │  └────────────┘ └──────────┘ │  │
+│  └──────────────────────────────────┘     └──────────────────────────────┘  │
+│                                                                              │
+│  ┌──────────────────────────────────────────────┐                           │
+│  │              AUDIO INPUT                       │                           │
+│  │  ┌────────────┐  ┌─────────────┐  ┌─────────┐ │                           │
+│  │  │ cpal Input │──│ FFT (8-band)│──│ Shared  │─┘                           │
+│  │  └────────────┘  └─────────────┘  │  State  │                              │
+│  └───────────────────────────────────┴─────────┘                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -77,50 +72,52 @@ A high-performance Rust video application for projection mapping with NDI input/
 
 ### 1. Core Module (`src/core/`)
 - **SharedState**: Thread-safe state shared between windows and threads
-- **Parameters**: Real-time adjustable parameters (LFOs, audio modulation)
 - **Vertex**: GPU vertex definitions for quad rendering
 
-### 2. Application (`src/app/` + `winit`)
-Dual-window application handler implementing `winit::application::ApplicationHandler`, split into focused sub-modules following rustjay-template conventions:
+### 2. Application (`src/app/`)
+Dual-window application handler implementing `winit::application::ApplicationHandler`:
 - **`mod.rs`**: `App` struct definition, `run_app()` entry point, `toggle_fullscreen()`
-- **`commands.rs`**: `dispatch_commands()` — processes `InputCommand` and `NdiOutputCommand` each frame; `apply_input_command(slot, cmd)` helper eliminates input1/input2 duplication
-- **`update.rs`**: `update_inputs()`, `process_videowall_calibration()`, `sync_video_wall_state()`, `sync_video_matrix_state()`, `update_preview_textures()`
+- **`commands.rs`**: `dispatch_commands()` — processes `InputCommand` and `NdiOutputCommand` each frame; `apply_input_command(slot, cmd)` processes both slots with a single code path
+- **`update.rs`**: `update_inputs()`, `process_matrix_test_pattern()`, `sync_video_wall_state()`, `sync_video_matrix_state()`
 - **`events.rs`**: `ApplicationHandler` impl — `resumed()`, `window_event()`, `about_to_wait()`
 
 Window roles:
 - **Output Window**: Fullscreen-capable, cursor hidden, wgpu surface
 - **Control Window**: ImGui-based UI, resizable, decorated
 
-### 3. NDI Input (`src/ndi/input.rs`)
-Based on rustjay_waaaves patterns:
-- **NdiSourceFinder**: Network discovery of NDI sources
-- **NdiReceiver**: Background thread receiver with BGRA→RGBA conversion
-- **Bounded channel** with latest-frame-only semantics (drops old frames)
-- Thread-safe frame queue using `crossbeam::channel`
+### 3. Input (`src/input/`)
+- **InputManager**: Manages Input 1 and Input 2 with independent source types
+- **NDI** (`ndi.rs`): Background thread receiver with BGRA→RGBA conversion, bounded channel with latest-frame-only semantics
+- **Syphon** (`syphon_input.rs`): macOS GPU texture sharing (zero-copy via IOSurface)
+- **Webcam** (`webcam.rs`): Optional, via nokhwa
 
-### 4. NDI Output (`src/ndi/output.rs`)
-Dedicated sender thread pattern from rustjay_waaaves:
-- **NdiOutputSender**: Background thread sender with RGBA→BGRA/BGRX conversion
-- **Bounded channel** (capacity=2) - drops frames if consumer is slow
-- **Cloneable handle**: Non-owning clones can submit frames
-- Thread persists via `Box::leak` pattern
+### 4. Output (`src/output/` + `src/ndi/`)
+- **OutputManager**: Coordinates NDI and Syphon outputs
+- **NdiOutputSender** (`ndi/output.rs`): Dedicated background thread, bounded channel (capacity=2), `Box::leak` pattern
+- **SyphonOutput** (`output/syphon.rs`): macOS GPU texture sharing
+- **Readback** (`output/readback.rs`): GPU→CPU readback for CPU-based output paths
 
 ### 5. Rendering Engine (`src/engine/`)
 GPU-accelerated pipeline using wgpu:
-- **TextureManager**: Input texture management and updates
-- **RenderPipeline**: Shader-based video processing
-- **Blit Pipeline**: Final output to surface
+- **WgpuEngine** (`renderer.rs`): Main render pipeline, video matrix/wall rendering, AprilTag pattern display, blit-to-surface
+- **Texture** (`texture.rs`): Texture creation and management utilities
 
 ### 6. GUI (`src/gui/`)
-ImGui-based control interface:
-- **ControlGui**: Parameter controls, NDI source selection
-- **Preview**: Real-time output preview (via shared texture)
+ImGui-based control interface with tabs: Inputs, Mapping, Matrix, Output, Settings.
 
-### 7. Audio (`src/audio/`)
+### 7. Video Wall / Matrix (`src/videowall/`)
+- **AprilTag detection** (`apriltag.rs`): Pure Rust detector + runtime marker generator via `apriltag-sys` FFI (supports all 587 tag36h11 markers without pre-generated files)
+- **Auto-detection** (`apriltag_auto_detect.rs`): Infers screen positions, aspect ratios (4:3, 16:9, 21:9), and orientations from AprilTag distortion
+- **Grid mapping** (`grid_mapping.rs`): N x M grid subdivision with per-cell output mapping
+- **Matrix renderer** (`matrix_renderer.rs`): GPU renderer for grid-based multi-display output
+- **Video wall renderer** (`renderer.rs`): GPU renderer for quad-mapped displays
+- **Calibration** (`calibration.rs`): State machine calibration controller
+- **Test patterns** (`test_pattern.rs`): Colour bars, grids, numbered patterns, checkerboard, gradient
+
+### 8. Audio (`src/audio/`)
 Optional audio analysis:
 - **AudioInput**: cpal-based audio capture
 - **FFT**: 8-band frequency analysis
-- **Beat Detection**: BPM and phase tracking
 
 ---
 
@@ -155,166 +152,103 @@ AUDIO THREAD (cpal callback)
 
 ## Data Flow
 
-### Input Flow (Webcam/NDI/OBS)
+### Input Flow
 ```
-Webcam:  Camera → MJPEG/YUYV → RGBA Conversion → Frame Queue → GPU Upload → Shader
+Webcam:  Camera → MJPEG/YUYV → RGBA → Frame Queue → GPU Upload → Shader
 NDI:     Network → NDI SDK → Receiver Thread → BGRA→RGBA → Frame Queue → GPU Upload → Shader
-OBS:     OBS NDI Output → Same as NDI above
+Syphon:  IOSurface → GPU zero-copy texture → Shader
 ```
 
-### NDI Output Flow
+### Output Flow
 ```
-Shader Output → GPU Readback → RGBA→BGRA Conversion → Frame Queue → Sender Thread → NDI SDK → Network
+Shader → GPU Render Target
+  ├── Blit to surface (output window)
+  ├── Syphon: GPU texture → IOSurface → receiving apps (zero-copy)
+  └── NDI: GPU Readback → RGBA→BGRA → Frame Queue → Sender Thread → NDI SDK → Network
 ```
 
 ---
 
 ## Key Design Decisions
 
-### 1. Dedicated NDI Output Thread
-Following rustjay_waaaves pattern:
-- **Why**: NDI SDK send operations can block; moving off main thread prevents frame drops
-- **How**: Thread owns NDI `Sender`, receives frames via channel, uses `Box::leak` to persist
-- **Benefit**: Render loop never blocks on network I/O
+### 1. Dedicated Output Threads
+NDI SDK send operations can block; moving them off the main thread prevents frame drops. The thread owns the NDI `Sender`, receives frames via a bounded channel, and persists via `Box::leak`.
 
 ### 2. Multi-Input Support
-- **Input Types**: Webcam (via nokhwa), NDI (Network Device Interface), OBS (via NDI output), Syphon (macOS GPU zero-copy)
-- **Independent Mapping**: Each input can be selected independently with its own configuration
-- **Hot Swappable**: Change inputs on the fly without restarting the application
-- **Refreshable Lists**: Device lists are cached but can be refreshed to detect new sources
-- **Command dispatch**: GUI writes an `InputCommand` variant into `SharedState.input1_command` / `input2_command`; `App::apply_input_command(slot, cmd)` processes both slots with a single code path
+- **Input Types**: Webcam, NDI, OBS (via NDI), Syphon (macOS GPU zero-copy)
+- **Independent Mapping**: Each input can be selected independently
+- **Hot Swappable**: Change inputs on the fly without restart
+- **Command dispatch**: GUI writes `InputCommand` variants into SharedState; `App::apply_input_command(slot, cmd)` processes both slots with a single code path
 
 ### 3. Bounded Frame Queues
 - **Input Queue**: Capacity 5, drops oldest when full (latest-frame semantics)
 - **Output Queue**: Capacity 2, drops when full (low-latency over reliability)
-- **Why**: Prevents memory growth under load, prioritizes fresh frames
+- Prevents memory growth under load; prioritises fresh frames
 
-### 3. Dual Window with Shared GPU Context
-- Single `wgpu::Instance`, shared `Device` and `Queue`
-- Output window owns surface, control window shares resources
-- ImGui renderer uses same device/queue for UI rendering
+### 4. Dual Window with Shared GPU Context
+- Single `wgpu::Instance`, shared `Device` and `Queue` (wrapped in `Arc`)
+- Output window owns the wgpu surface; control window shares GPU resources
+- ImGui renderer uses the same device/queue for UI rendering
 
-### 4. Cursor Hiding on Output Window
-```rust
-// Default hidden
-window.set_cursor_visible(false);
-
-// Show when cursor leaves, hide when enters
-WindowEvent::CursorEntered { .. } => window.set_cursor_visible(false),
-WindowEvent::CursorLeft { .. } => window.set_cursor_visible(true),
-```
-
-### 5. Fullscreen Toggle
-```rust
-fn toggle_fullscreen(&mut self) {
-    let fullscreen_mode = if self.output_fullscreen {
-        Some(winit::window::Fullscreen::Borderless(None))
-    } else {
-        None
-    };
-    output_window.set_fullscreen(fullscreen_mode);
-}
-```
+### 5. Runtime AprilTag Generation
+Marker images are generated at runtime via `apriltag_sys::apriltag_to_image()` FFI rather than loaded from disk. This eliminates file-path dependencies and supports any grid size up to 9x9 (81 markers) without needing pre-generated PNGs.
 
 ---
 
 ## File Structure
 
 ```
-rusty_mapper/
+rustjay-mapper/
 ├── Cargo.toml
-├── build.rs                  # macOS rpath setup: Syphon + NDI (NDI_SDK_DIR / SYPHON_FRAMEWORK_DIR)
-├── DESIGN.md                 # This document
+├── build.rs                 # macOS rpath setup for Syphon + NDI
+├── config.toml              # Runtime configuration
+├── README.md
+├── DESIGN.md                # This document
+├── AGENTS.md                # Guide for AI agents working on this codebase
 ├── src/
-│   ├── main.rs               # Entry point
+│   ├── main.rs              # Entry point
+│   ├── lib.rs               # Library crate root
+│   ├── config.rs            # TOML configuration loading
 │   ├── app/
-│   │   ├── mod.rs            # App struct, run_app(), toggle_fullscreen()
-│   │   ├── commands.rs       # dispatch_commands(), apply_input_command(slot, cmd)
-│   │   ├── update.rs         # update_inputs(), calibration sync, preview textures
-│   │   └── events.rs         # ApplicationHandler impl (resumed, window_event, about_to_wait)
-│   ├── config.rs             # Configuration loading
+│   │   ├── mod.rs           # App struct, run_app(), toggle_fullscreen()
+│   │   ├── commands.rs      # Input/output command dispatch
+│   │   ├── update.rs        # Per-frame updates, matrix pattern sync
+│   │   └── events.rs        # winit ApplicationHandler impl
 │   ├── core/
-│   │   ├── mod.rs            # Core module exports
-│   │   ├── state.rs          # SharedState, InputCommand, NdiOutputCommand
-│   │   └── vertex.rs         # GPU vertex types
-│   ├── input/
-│   │   ├── mod.rs            # InputManager, InputType
-│   │   ├── ndi.rs            # NDI receiver
-│   │   ├── syphon_input.rs   # Syphon input (macOS only)
-│   │   └── webcam.rs         # Webcam capture (optional feature)
-│   ├── ndi/
-│   │   ├── mod.rs            # NDI module exports
-│   │   └── output.rs         # NdiOutputSender (dedicated output thread)
-│   ├── output/
-│   │   ├── mod.rs            # Output module exports
-│   │   └── syphon.rs         # Syphon output (macOS only)
+│   │   ├── state.rs         # SharedState (thread-safe)
+│   │   └── vertex.rs        # GPU vertex types
 │   ├── engine/
-│   │   ├── mod.rs            # Engine exports
-│   │   ├── renderer.rs       # Main wgpu renderer + pipeline
-│   │   └── texture.rs        # Texture utilities
+│   │   ├── renderer.rs      # wgpu render pipeline + blit + AprilTag pattern
+│   │   └── texture.rs       # Texture utilities
 │   ├── gui/
-│   │   ├── mod.rs            # GUI exports
-│   │   ├── gui.rs            # ImGui control interface (tabs: Inputs, Mapping, Matrix, Output, Settings)
-│   │   └── renderer.rs       # ImGui wgpu renderer
-│   ├── videowall/            # Video wall + matrix subsystem (~6,000 LOC)
-│   │   ├── mod.rs
-│   │   ├── calibration.rs    # State machine calibration controller
-│   │   ├── apriltag.rs       # AprilTag detection (pure Rust)
-│   │   ├── apriltag_auto_detect.rs
-│   │   ├── aruco.rs          # ArUco detection
-│   │   ├── quad_mapper.rs
-│   │   ├── grid_mapping.rs
-│   │   ├── matrix_renderer.rs
-│   │   ├── renderer.rs
-│   │   ├── config.rs
-│   │   └── test_pattern.rs
-│   └── audio/
-│       ├── mod.rs            # Audio exports
-│       └── input.rs          # cpal capture + 8-band FFT
-└── config.toml               # Runtime configuration
-```
-
----
-
-## Dependencies
-
-```toml
-[dependencies]
-# Windowing & Graphics
-winit = "0.30"
-wgpu = "25.0"
-pollster = "0.3"
-
-# Math
-glam = { version = "0.29", features = ["bytemuck"] }
-bytemuck = { version = "1.21", features = ["derive"] }
-
-# NDI
-grafton-ndi = "0.11"
-
-# Threading
-crossbeam = "0.8"
-
-# Audio
-cpal = "0.15"
-rustfft = "6.2"
-
-# GUI
-imgui = "0.12"
-imgui-wgpu = "0.25"
-imgui-winit-support = "0.13"
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-
-# Logging
-log = "0.4"
-env_logger = "0.11"
-
-# Error Handling
-anyhow = "1.0"
-thiserror = "2.0"
+│   │   ├── gui.rs           # ImGui control interface
+│   │   └── renderer.rs      # ImGui wgpu backend
+│   ├── input/
+│   │   ├── mod.rs           # InputManager, InputSource
+│   │   ├── ndi.rs           # NDI receiver thread
+│   │   ├── syphon_input.rs  # Syphon input (macOS)
+│   │   └── webcam.rs        # Webcam capture (optional)
+│   ├── ndi/
+│   │   └── output.rs        # NDI sender thread
+│   ├── output/
+│   │   ├── mod.rs           # OutputManager
+│   │   ├── syphon.rs        # Syphon output (macOS)
+│   │   └── readback.rs      # GPU readback for CPU-based outputs
+│   ├── audio/
+│   │   └── input.rs         # cpal capture + 8-band FFT
+│   └── videowall/
+│       ├── apriltag.rs              # AprilTag detector + runtime marker generator
+│       ├── apriltag_auto_detect.rs  # Screen layout auto-detection
+│       ├── aruco.rs                 # Legacy ArUco dictionary (fallback)
+│       ├── calibration.rs           # Calibration state machine
+│       ├── grid_mapping.rs          # Grid subdivision + cell mapping
+│       ├── matrix_renderer.rs       # Video matrix GPU renderer
+│       ├── renderer.rs              # Video wall GPU renderer
+│       ├── quad_mapper.rs           # Quad warping utilities
+│       ├── config.rs                # Video wall serialisation
+│       └── test_pattern.rs          # Test pattern generator
+└── assets/
+    └── apriltags/           # Optional pre-generated marker PNGs (fallback)
 ```
 
 ---
@@ -325,64 +259,53 @@ On macOS, `build.rs` embeds runtime rpaths so both Syphon and NDI dylibs are fou
 
 | Library | Discovery | Env var override |
 |---------|-----------|-----------------|
-| `Syphon.framework` | `<workspace>/../crates/syphon/syphon-lib/` | `SYPHON_FRAMEWORK_DIR` |
+| `Syphon.framework` | `<workspace>/../syphon-rs/syphon-lib/` or cargo git dep cache | `SYPHON_FRAMEWORK_DIR` |
 | `libndi.dylib` | Probes standard SDK install paths (e.g. `/Library/NDI SDK for Apple/lib/macOS`) | `NDI_SDK_DIR` |
 
 `@executable_path` and `@loader_path` entries are also added to support bundled app deployments.
 
 ---
 
-## Performance Considerations
+## Dependencies
 
-1. **GPU Upload**: Use `write_texture` for CPU→GPU transfers
-2. **Readback**: Triple-buffered GPU→CPU for NDI output (async)
-3. **VSync**: Configurable (on for output, off for control)
-4. **Frame Skip**: NDI output can skip frames to maintain render FPS
+```toml
+[dependencies]
+winit = "0.30"
+wgpu = { version = "25.0", features = ["spirv"] }
+pollster = "0.3"
+glam = { version = "0.29", features = ["bytemuck", "serde"] }
+bytemuck = { version = "1.21", features = ["derive"] }
+image = { version = "0.25", features = ["png", "jpeg"] }
+grafton-ndi = "0.11"
+crossbeam = "0.8"
+cpal = "0.15"
+rustfft = "6.2"
+realfft = "3.4"
+imgui = "0.12"
+imgui-wgpu = "0.25"
+imgui-winit-support = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1.0"
+thiserror = "2.0"
+apriltag = "0.4"
+apriltag-sys = "0.3"
+rfd = "0.15"
 
----
-
-## Input Device Selection
-
-The GUI provides a device selector window with tabs for different input types:
-
-### Webcam Tab
-- Lists available webcam devices (0-3, auto-detected)
-- Select any detected camera for Input 1 or Input 2
-- Uses nokhwa library with MJPEG decoding
-
-### NDI Tab
-- Lists NDI sources on the network (non-OBS)
-- Auto-refreshes on window open
-- Manual refresh button available
-
-### OBS Tab
-- Shows NDI sources with "OBS" in the name
-- Requires OBS NDI plugin installed and active
-- Direct selection for streaming output
-
-### Device Refresh
-- Menu: Devices → Refresh All
-- Detects newly connected sources
-- Updates cached device lists
-
-## Feature Flags
-
-### Webcam Support
-Enabled by default. Disable with:
-```bash
-cargo build --no-default-features
+# macOS only
+syphon-core = { git = "..." }
+syphon-wgpu = { git = "..." }
+metal = "0.29"
 ```
 
-Useful when:
-- libclang is not available
-- Webcam support is not needed
-- Building for headless deployment
+---
 
 ## Video Matrix / Grid Mapping
 
 The application supports projection mapping to multiple displays via an HDMI video matrix using a **grid subdivision approach**:
-
-### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -422,22 +345,36 @@ The application supports projection mapping to multiple displays via an HDMI vid
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Key Features
+### AprilTag Calibration
 
-- **Configurable Grid**: N×M subdivision of input texture (3×3 default)
-- **Per-Cell Mapping**: Each grid cell maps independently to output
-- **AprilTag Detection**: Auto-detects aspect ratio and orientation from markers
-- **Single Output**: One HDMI output feeds the video matrix
-- **Unmapped Cells**: Render as black (no signal)
+The calibration workflow uses AprilTag fiducial markers (tag36h11 family, pure Rust detection via the `apriltag` crate):
 
-See [DESIGN_GUI_LAYOUT.md](DESIGN_GUI_LAYOUT.md) for detailed UI design.
+1. **Pattern display**: The app generates a calibration pattern with one unique AprilTag per grid cell, sized to the user's configured grid (up to 9x9). Markers are generated at runtime via FFI — no pre-generated files needed.
+
+2. **Detection**: A photo of the displays (or a live camera feed) is analysed. The detector identifies each marker's ID, position, and corner distortion.
+
+3. **Inference**: From the tag distortion the system infers each display's aspect ratio (4:3, 16:9, or 21:9) and builds UV-mapped output regions.
+
+4. **Quick presets**: Common setups (2x 16:9, 4:3 + 16:9, 2x 4:3) can be applied with a single click.
+
+---
+
+## Performance Considerations
+
+1. **GPU Upload**: `write_texture` for CPU→GPU transfers
+2. **Readback**: Buffered GPU→CPU for NDI output (async)
+3. **Syphon**: Zero-copy GPU texture sharing via IOSurface (macOS)
+4. **VSync**: Configurable per window
+5. **Frame Skip**: NDI output can drop frames to maintain render FPS
+
+---
 
 ## Future Extensions
 
-1. **Syphon/Spout**: macOS/Windows GPU texture sharing
-2. **MIDI/OSC**: External controller support
-3. **Recording**: GPU-accelerated video recording
-4. **Multi-output**: Multiple NDI outputs, different resolutions
-5. **Projection Mapping**: Mesh warping for geometry correction
-6. **More Input Types**: SDI capture cards, Blackmagic devices
+1. **Spout**: Windows GPU texture sharing (Spout2)
+2. **v4l2loopback**: Linux virtual video device output
+3. **MIDI/OSC**: External controller support
+4. **Recording**: GPU-accelerated video recording
+5. **Multi-output**: Multiple NDI outputs at different resolutions
+6. **Mesh Warping**: Projection mapping geometry correction
 7. **Multiple Matrix Outputs**: Support multiple independent video matrices

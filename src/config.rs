@@ -44,8 +44,8 @@ pub struct ControlWindowConfig {
 impl Default for ControlWindowConfig {
     fn default() -> Self {
         Self {
-            width: 400,
-            height: 600,
+            width: 1280,
+            height: 720,
             title: "Rusty Mapper Control".to_string(),
         }
     }

@@ -760,18 +760,17 @@ impl WgpuEngine {
         } else {
             &self.render_target.view
         };
-        
+
         // Blit final output to surface
         self.blit_to_surface(&mut encoder, &surface_view, final_output_view);
-        
+
         // Submit commands to GPU
         self.queue.submit(std::iter::once(encoder.finish()));
-        
+
         // Present surface
         surface_texture.present();
-        
+
         // Submit frame to all active outputs (Syphon, NDI, etc.)
-        // Use video matrix output if enabled, then video wall, otherwise use render target
         let output_texture = if self.video_matrix_enabled {
             self.video_matrix_output_texture.as_ref()
                 .map(|t| &t.texture)

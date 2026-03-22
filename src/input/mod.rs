@@ -37,7 +37,7 @@ pub use syphon_wgpu::SyphonWgpuInput;
 pub struct WebcamFrame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    pub data: Vec<u8>, // BGRA format (for wgpu Bgra8Unorm texture)
     pub timestamp: std::time::Instant,
 }
 
@@ -408,21 +408,28 @@ impl Drop for InputSource {
     }
 }
 
-/// Manages multiple input sources
+/// Results returned by the background discovery thread.
+#[derive(Default)]
+struct DiscoveryResults {
+    webcam_devices: Option<Vec<String>>,
+    ndi_sources: Option<Vec<String>>,
+}
+
+/// Manages multiple input sources.
 pub struct InputManager {
     /// Input 1 (primary)
     pub input1: InputSource,
     /// Input 2 (secondary)
     pub input2: InputSource,
-    
-    // Device lists
+
+    // Cached device lists (last known good)
     webcam_devices: Vec<String>,
     ndi_sources: Vec<String>,
-    
-    // Refresh flags
-    webcam_dirty: bool,
-    ndi_dirty: bool,
-    
+
+    // Async discovery
+    discovery_rx: Option<std::sync::mpsc::Receiver<DiscoveryResults>>,
+    is_discovering: bool,
+
     // wgpu resources for Syphon (macOS only)
     #[cfg(target_os = "macos")]
     device: Option<Arc<wgpu::Device>>,
@@ -437,82 +444,113 @@ impl InputManager {
             input2: InputSource::new(),
             webcam_devices: Vec::new(),
             ndi_sources: Vec::new(),
-            webcam_dirty: true,
-            ndi_dirty: true,
+            discovery_rx: None,
+            is_discovering: false,
             #[cfg(target_os = "macos")]
             device: None,
             #[cfg(target_os = "macos")]
             queue: None,
         }
     }
-    
-    /// Initialize with wgpu device and queue (required for Syphon on macOS)
+
+    /// Initialize with wgpu device and queue (required for Syphon on macOS).
     pub fn initialize(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(target_os = "macos")]
         {
             self.device = Some(Arc::new(device.clone()));
             self.queue = Some(Arc::new(queue.clone()));
-            
-            // Initialize input sources
             self.input1.initialize_syphon(device, queue);
             self.input2.initialize_syphon(device, queue);
         }
     }
-    
-    /// Refresh webcam device list
-    pub fn refresh_webcam_devices(&mut self) -> Vec<String> {
-        #[cfg(feature = "webcam")]
-        {
-            self.webcam_devices = std::panic::catch_unwind(|| {
-                list_cameras()
-            }).unwrap_or_else(|_| {
-                log::error!("Webcam enumeration panicked");
-                Vec::new()
-            });
+
+    /// Kick off a background device discovery pass (non-blocking).
+    ///
+    /// Call this when the user opens the input picker or presses "Refresh".
+    /// Poll `is_discovering()` and call `poll_discovery()` each frame to
+    /// collect results when they arrive.
+    pub fn kick_discovery(&mut self) {
+        if self.is_discovering {
+            return; // Already in progress
         }
-        
-        #[cfg(not(feature = "webcam"))]
-        {
-            self.webcam_devices = Vec::new();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.discovery_rx = Some(rx);
+        self.is_discovering = true;
+
+        std::thread::spawn(move || {
+            let mut results = DiscoveryResults::default();
+
+            // Webcam enumeration (may panic on some platforms — catch it)
+            #[cfg(feature = "webcam")]
+            {
+                results.webcam_devices = Some(
+                    std::panic::catch_unwind(list_cameras).unwrap_or_else(|_| {
+                        log::error!("[InputManager] Webcam enumeration panicked");
+                        Vec::new()
+                    }),
+                );
+            }
+            #[cfg(not(feature = "webcam"))]
+            {
+                results.webcam_devices = Some(Vec::new());
+            }
+
+            // NDI source discovery (blocks for timeout_ms internally)
+            results.ndi_sources = Some(list_ndi_sources(2000));
+
+            let _ = tx.send(results);
+        });
+
+        log::debug!("[InputManager] Device discovery started");
+    }
+
+    /// Returns `true` if a background discovery pass is currently running.
+    pub fn is_discovering(&self) -> bool {
+        self.is_discovering
+    }
+
+    /// Poll for completed discovery results (non-blocking, call every frame).
+    ///
+    /// Returns `true` if new results arrived and the device lists were updated.
+    pub fn poll_discovery(&mut self) -> bool {
+        let rx = match &self.discovery_rx {
+            Some(rx) => rx,
+            None => return false,
+        };
+
+        match rx.try_recv() {
+            Ok(results) => {
+                if let Some(devices) = results.webcam_devices {
+                    log::info!("[InputManager] Found {} webcam(s)", devices.len());
+                    self.webcam_devices = devices;
+                }
+                if let Some(sources) = results.ndi_sources {
+                    log::info!("[InputManager] Found {} NDI source(s)", sources.len());
+                    self.ndi_sources = sources;
+                }
+                self.is_discovering = false;
+                self.discovery_rx = None;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("[InputManager] Discovery thread exited unexpectedly");
+                self.is_discovering = false;
+                self.discovery_rx = None;
+                false
+            }
         }
-        
-        self.webcam_dirty = false;
-        log::info!("Found {} webcam devices", self.webcam_devices.len());
-        
-        self.webcam_devices.clone()
     }
-    
-    /// Refresh NDI sources
-    pub fn refresh_ndi_sources(&mut self) -> Vec<String> {
-        self.ndi_sources = list_ndi_sources(2000);
-        self.ndi_dirty = false;
-        log::info!("Found {} NDI sources", self.ndi_sources.len());
-        
-        self.ndi_sources.clone()
+
+    /// Get cached webcam device list. Call `kick_discovery()` to refresh.
+    pub fn get_webcam_devices(&self) -> &[String] {
+        &self.webcam_devices
     }
-    
-    /// Get cached webcam devices (refresh if needed)
-    pub fn get_webcam_devices(&mut self) -> Vec<String> {
-        if self.webcam_dirty {
-            self.refresh_webcam_devices()
-        } else {
-            self.webcam_devices.clone()
-        }
-    }
-    
-    /// Get cached NDI sources (refresh if needed)
-    pub fn get_ndi_sources(&mut self) -> Vec<String> {
-        if self.ndi_dirty {
-            self.refresh_ndi_sources()
-        } else {
-            self.ndi_sources.clone()
-        }
-    }
-    
-    /// Mark devices as needing refresh
-    pub fn invalidate_devices(&mut self) {
-        self.webcam_dirty = true;
-        self.ndi_dirty = true;
+
+    /// Get cached NDI source list. Call `kick_discovery()` to refresh.
+    pub fn get_ndi_sources(&self) -> &[String] {
+        &self.ndi_sources
     }
     
     /// Update all inputs (poll for new frames)

@@ -12,9 +12,28 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
+/// Convert RGBA to BGRA (swizzle red and blue channels)
+/// The wgpu texture format is Bgra8Unorm, so we need BGRA data
+fn rgba_to_bgra(rgba_data: &[u8]) -> Vec<u8> {
+    let mut bgra = Vec::with_capacity(rgba_data.len());
+    
+    for chunk in rgba_data.chunks_exact(4) {
+        // RGBA -> BGRA (swap R and B)
+        bgra.push(chunk[2]); // B (was R)
+        bgra.push(chunk[1]); // G (unchanged)
+        bgra.push(chunk[0]); // R (was B)
+        bgra.push(chunk[3]); // A (unchanged)
+    }
+    
+    bgra
+}
+
 /// Convert YUY2 (YUV 4:2:2) to RGBA
 /// Input: YUY2 format (4 bytes for 2 pixels)
 /// Output: RGBA format (4 bytes per pixel)
+/// 
+/// Note: Most webcams output limited range YUV (Y: 16-235, UV: 16-240)
+/// We apply proper range scaling for better color accuracy.
 fn yuy2_to_rgba(yuy2_data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let pixel_count = (width * height) as usize;
     let mut rgba = vec![0u8; pixel_count * 4];
@@ -26,23 +45,29 @@ fn yuy2_to_rgba(yuy2_data: &[u8], width: u32, height: u32) -> Vec<u8> {
         }
         
         // YUY2 layout: [Y0, U, Y1, V]
-        let y = if i % 2 == 0 { yuy2_data[yuy2_idx] } else { yuy2_data[yuy2_idx + 2] };
-        let u = yuy2_data[yuy2_idx + 1];
-        let v = yuy2_data[yuy2_idx + 3];
+        let y_raw = if i % 2 == 0 { yuy2_data[yuy2_idx] } else { yuy2_data[yuy2_idx + 2] };
+        let u_raw = yuy2_data[yuy2_idx + 1];
+        let v_raw = yuy2_data[yuy2_idx + 3];
         
-        // Convert YUV to RGB
-        let y = y as f32;
-        let u = u as f32 - 128.0;
-        let v = v as f32 - 128.0;
+        // Convert limited range YUV to normalized 0-1 range
+        // Y: 16-235 -> 0-1
+        // Cb/Cr (U/V): 16-240 -> -0.5 to 0.5
+        let y = (y_raw as f32 - 16.0) / 219.0;
+        let cb = (u_raw as f32 - 128.0) / 224.0;
+        let cr = (v_raw as f32 - 128.0) / 224.0;
         
-        let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
-        let g = (y - 0.344136 * u - 0.714136 * v).clamp(0.0, 255.0) as u8;
-        let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
+        // BT.601 matrix for YUV to RGB conversion
+        // R = Y + 1.402 * Cr
+        // G = Y - 0.344136 * Cb - 0.714136 * Cr
+        // B = Y + 1.772 * Cb
+        let r = (y + 1.402 * cr) * 255.0;
+        let g = (y - 0.344136 * cb - 0.714136 * cr) * 255.0;
+        let b = (y + 1.772 * cb) * 255.0;
         
         let rgba_idx = i * 4;
-        rgba[rgba_idx] = r;
-        rgba[rgba_idx + 1] = g;
-        rgba[rgba_idx + 2] = b;
+        rgba[rgba_idx] = r.clamp(0.0, 255.0) as u8;
+        rgba[rgba_idx + 1] = g.clamp(0.0, 255.0) as u8;
+        rgba[rgba_idx + 2] = b.clamp(0.0, 255.0) as u8;
         rgba[rgba_idx + 3] = 255; // Alpha
     }
     
@@ -53,7 +78,7 @@ fn yuy2_to_rgba(yuy2_data: &[u8], width: u32, height: u32) -> Vec<u8> {
 pub struct WebcamFrame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>, // RGBA format
+    pub data: Vec<u8>, // BGRA format (for wgpu Bgra8Unorm texture)
     pub timestamp: Instant,
 }
 
@@ -116,13 +141,14 @@ impl WebcamCapture {
                 return;
             }
             
-            // Get actual camera resolution after opening
+            // Get actual camera resolution and format after opening
             let actual_resolution = camera.resolution();
             let actual_width = actual_resolution.width() as u32;
             let actual_height = actual_resolution.height() as u32;
+            let camera_format = camera.camera_format();
             
-            log::info!("[Webcam] Camera {} opened at {}x{}", 
-                device_index, actual_width, actual_height);
+            log::info!("[Webcam] Camera {} opened at {}x{} format: {:?}", 
+                device_index, actual_width, actual_height, camera_format);
             
             // Capture loop
             loop {
@@ -138,24 +164,28 @@ impl WebcamCapture {
                         let expected_rgba_size = (actual_width * actual_height * 4) as usize;
                         
                         // Convert to RGBA if needed
-                        let rgba_data = if buffer.len() == expected_rgba_size {
+                        let (rgba_data, format_name) = if buffer.len() == expected_rgba_size {
                             // Already RGBA
-                            buffer.to_vec()
+                            (buffer.to_vec(), "RGBA")
                         } else if buffer.len() == (actual_width * actual_height * 2) as usize {
                             // YUY2 format - convert to RGBA
-                            yuy2_to_rgba(buffer, actual_width, actual_height)
+                            log::debug!("[Webcam] Converting YUY2 to RGBA");
+                            (yuy2_to_rgba(buffer, actual_width, actual_height), "YUY2")
                         } else {
                             // Unknown format, try to use as-is (may cause visual issues)
                             log::warn!("[Webcam] Unknown frame format: {} bytes for {}x{}", 
                                 buffer.len(), actual_width, actual_height);
-                            buffer.to_vec()
+                            (buffer.to_vec(), "Unknown")
                         };
+                        
+                        // Convert RGBA to BGRA for wgpu texture format (BGRA8Unorm)
+                        let bgra_data = rgba_to_bgra(&rgba_data);
                         
                         // Use actual camera resolution, not requested
                         let webcam_frame = WebcamFrame {
                             width: actual_width,
                             height: actual_height,
-                            data: rgba_data,
+                            data: bgra_data,
                             timestamp: Instant::now(),
                         };
                         

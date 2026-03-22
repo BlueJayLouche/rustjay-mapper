@@ -230,6 +230,12 @@ pub struct SharedState {
     pub videowall_edit_mode: bool,
     pub videowall_edit_display: Option<u32>,  // Which display is being edited
     pub videowall_edit_corner: Option<usize>, // Which corner (0-3) is being dragged
+
+    // Device discovery results (written by InputManager, read by GUI)
+    pub discovered_webcams: Vec<String>,
+    pub discovered_ndi_sources: Vec<String>,
+    /// True while a background discovery pass is running.
+    pub discovering_devices: bool,
 }
 
 impl SharedState {
@@ -310,6 +316,9 @@ impl SharedState {
             videowall_edit_mode: false,
             videowall_edit_display: None,
             videowall_edit_corner: None,
+            discovered_webcams: Vec::new(),
+            discovered_ndi_sources: Vec::new(),
+            discovering_devices: false,
         }
     }
     

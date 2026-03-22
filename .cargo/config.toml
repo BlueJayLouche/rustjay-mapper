@@ -1,0 +1,15 @@
+# Project-level Cargo configuration
+
+[env]
+# Force apriltag-sys to compile the bundled C source directly via the `cc`
+# crate rather than probing pkg-config for a system libapriltag.
+#
+# This makes the build self-contained on Linux CI/Docker environments where
+# `libapriltag-dev` is not installed, and removes the need for system packages.
+#
+# The C source files are bundled in the apriltag-sys crate package (apriltag-src/).
+# `raw,static` compiles them with gcc/clang and links them statically.
+#
+# To use a system libapriltag instead (e.g. on a dev machine with the package
+# installed), override with: APRILTAG_SYS_METHOD=pkg-config cargo build
+APRILTAG_SYS_METHOD = "raw,static"

@@ -24,6 +24,7 @@
 //! ```
 
 use apriltag::{Detector, Family, Image as AprilTagImage};
+use apriltag_sys;
 use image::GrayImage;
 
 /// AprilTag families available for detection
@@ -252,17 +253,71 @@ impl AprilTagGenerator {
         Some(path)
     }
 
-    /// Load a marker image by ID
+    /// Load a marker image by ID from a pre-generated PNG file.
+    ///
+    /// Falls back to [`generate_marker`] if the file is not found.
     pub fn load_marker(&self, id: u32) -> anyhow::Result<GrayImage> {
-        let path = self.marker_path(id)
-            .ok_or_else(|| anyhow::anyhow!("Invalid marker ID: {}", id))?;
-        
-        if !path.exists() {
-            anyhow::bail!("Marker image not found: {:?}", path);
+        // Try loading from file first (for backward compat / custom markers)
+        if let Some(path) = self.marker_path(id) {
+            if path.exists() {
+                let img = image::open(&path)?;
+                return Ok(img.to_luma8());
+            }
         }
-        
-        let img = image::open(&path)?;
-        Ok(img.to_luma8())
+        // Fall back to runtime generation
+        self.generate_marker(id)
+    }
+
+    /// Generate a marker image at runtime using the apriltag C library.
+    ///
+    /// This works for any valid marker ID (0–586 for tag36h11) without
+    /// needing pre-generated PNG files on disk.
+    pub fn generate_marker(&self, id: u32) -> anyhow::Result<GrayImage> {
+        if !self.family.is_valid_id(id) {
+            anyhow::bail!("Invalid marker ID {} for family {}", id, self.family.name());
+        }
+
+        unsafe {
+            // Create the C family struct
+            let fam_ptr = match self.family {
+                AprilTagFamily::Tag36h11 => apriltag_sys::tag36h11_create(),
+                AprilTagFamily::Tag25h9  => apriltag_sys::tag25h9_create(),
+                AprilTagFamily::Tag16h5  => apriltag_sys::tag16h5_create(),
+            };
+            if fam_ptr.is_null() {
+                anyhow::bail!("Failed to create apriltag family");
+            }
+
+            let img_ptr = apriltag_sys::apriltag_to_image(fam_ptr, id as i32);
+            if img_ptr.is_null() {
+                apriltag_sys::tag36h11_destroy(fam_ptr);
+                anyhow::bail!("apriltag_to_image returned null for id {}", id);
+            }
+
+            let img = &*img_ptr;
+            let w = img.width as u32;
+            let h = img.height as u32;
+            let stride = img.stride as usize;
+
+            let mut gray = GrayImage::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let val = *img.buf.add(y as usize * stride + x as usize);
+                    gray.put_pixel(x, y, image::Luma([val]));
+                }
+            }
+
+            apriltag_sys::image_u8_destroy(img_ptr);
+
+            // Destroy using the correct family destructor
+            match self.family {
+                AprilTagFamily::Tag36h11 => apriltag_sys::tag36h11_destroy(fam_ptr),
+                AprilTagFamily::Tag25h9  => apriltag_sys::tag25h9_destroy(fam_ptr),
+                AprilTagFamily::Tag16h5  => apriltag_sys::tag16h5_destroy(fam_ptr),
+            }
+
+            Ok(gray)
+        }
     }
 
     /// Get the family
@@ -475,34 +530,41 @@ mod tests {
     }
 
     #[test]
-    fn test_detection_on_real_image() {
-        // Load the test AprilTag image we downloaded
-        let test_path = std::path::PathBuf::from("assets/apriltags/tag36_11_00000.png");
-        
-        if !test_path.exists() {
-            println!("Skipping test: AprilTag test image not found at {:?}", test_path);
-            return;
-        }
+    fn test_generate_marker() {
+        let gen = AprilTagGenerator::new(AprilTagFamily::Tag36h11);
 
-        let img = image::open(&test_path).expect("Failed to load test image");
-        let gray = img.to_luma8();
+        // Generate marker 0
+        let marker = gen.generate_marker(0).expect("Failed to generate marker 0");
+        assert!(marker.width() > 0);
+        assert!(marker.height() > 0);
+
+        // Generate marker 15 (needed for 4x4 grids)
+        let marker15 = gen.generate_marker(15).expect("Failed to generate marker 15");
+        assert!(marker15.width() > 0);
+
+        // Invalid ID should fail
+        assert!(gen.generate_marker(587).is_err());
+    }
+
+    #[test]
+    fn test_detect_generated_marker() {
+        // Generate a marker at runtime and verify it can be detected
+        let gen = AprilTagGenerator::new(AprilTagFamily::Tag36h11);
+        let marker = gen.generate_marker(0).expect("Failed to generate marker");
+
+        // Upscale for reliable detection
+        let upscaled = image::imageops::resize(
+            &marker,
+            marker.width() * 20,
+            marker.height() * 20,
+            image::imageops::FilterType::Nearest,
+        );
 
         let mut detector = AprilTagDetector::new(AprilTagFamily::Tag36h11);
-        let detections = detector.detect(&gray);
+        let detections = detector.detect(&upscaled);
 
-        println!("Detected {} markers", detections.len());
-        
-        // Should detect at least 1 marker
-        assert!(!detections.is_empty(), "Should detect at least one marker");
-        
-        // First detection should be ID 0
-        let first = &detections[0];
-        assert_eq!(first.id, 0, "First marker should be ID 0");
-        
-        // Should have 4 corners
-        assert_eq!(first.corners.len(), 4);
-        
-        println!("Detection successful: ID {} at center {:?}", first.id, first.center);
+        assert!(!detections.is_empty(), "Should detect the generated marker");
+        assert_eq!(detections[0].id, 0, "Should detect ID 0");
     }
 
     #[test]

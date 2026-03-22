@@ -132,7 +132,7 @@ impl App {
             }
             InputCommand::RefreshDevices => {
                 if let Some(ref mut manager) = self.input_manager {
-                    manager.invalidate_devices();
+                    manager.kick_discovery();
                 }
             }
             InputCommand::None => {}

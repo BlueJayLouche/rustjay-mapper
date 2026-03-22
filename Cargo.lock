@@ -3257,17 +3257,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustversion"
-version = "1.0.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "rusty_mapper"
+name = "rustjay-mapper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "apriltag",
+ "apriltag-sys",
  "bytemuck",
  "chrono",
  "cocoa 0.25.0",
@@ -3302,6 +3297,12 @@ dependencies = [
  "wgpu",
  "winit",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "same-file"
@@ -3566,6 +3567,7 @@ dependencies = [
 [[package]]
 name = "syphon-core"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/syphon-rs#1c6e0ea2e7339b1600c7cd46625c76ba083de9c7"
 dependencies = [
  "block",
  "cocoa 0.25.0",
@@ -3583,6 +3585,7 @@ dependencies = [
 [[package]]
 name = "syphon-metal"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/syphon-rs#1c6e0ea2e7339b1600c7cd46625c76ba083de9c7"
 dependencies = [
  "cocoa 0.25.0",
  "core-foundation 0.9.4",
@@ -3600,6 +3603,7 @@ dependencies = [
 [[package]]
 name = "syphon-wgpu"
 version = "0.1.0"
+source = "git+https://github.com/BlueJayLouche/syphon-rs#1c6e0ea2e7339b1600c7cd46625c76ba083de9c7"
 dependencies = [
  "bytemuck",
  "cocoa 0.25.0",

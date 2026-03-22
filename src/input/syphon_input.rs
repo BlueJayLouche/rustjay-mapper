@@ -96,9 +96,37 @@ impl SyphonInputReceiver {
             let device = self.device.as_ref()?;
             let queue = self.queue.as_ref()?;
             
-            if let Some(texture) = client.receive_texture(device, queue) {
-                self.resolution = (texture.width(), texture.height());
-                return Some(texture);
+            if client.receive_texture(device, queue) {
+                if let Some(src) = client.output_texture() {
+                    let (w, h) = (src.width(), src.height());
+                    self.resolution = (w, h);
+
+                    // GPU-to-GPU copy: create an owned texture the caller can hold.
+                    let dst = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("syphon_input_frame"),
+                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: src.format(),
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::COPY_DST
+                            | wgpu::TextureUsages::COPY_SRC,
+                        view_formats: &[],
+                    });
+
+                    let mut encoder = device.create_command_encoder(
+                        &wgpu::CommandEncoderDescriptor { label: Some("syphon_copy") },
+                    );
+                    encoder.copy_texture_to_texture(
+                        src.as_image_copy(),
+                        dst.as_image_copy(),
+                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    );
+                    queue.submit(std::iter::once(encoder.finish()));
+
+                    return Some(dst);
+                }
             }
         }
         

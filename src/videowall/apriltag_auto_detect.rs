@@ -71,6 +71,16 @@ pub struct AutoDetectConfig {
     pub min_confidence: f32,
     /// Where the tag is placed on the physical screen
     pub tag_placement: TagPlacement,
+    /// Aspect ratio of the live input texture (width / height).
+    /// Used to correctly scale source_rect HEIGHT in input UV space.
+    /// Must match the internal resolution (e.g., 1920/1080 = 16/9).
+    /// This is NOT the detection photo aspect — the photo aspect is only used
+    /// for classifying the physical screen's aspect ratio from tag distortion.
+    pub input_aspect: f32,
+    /// After detection, uniformly scale and centre all source_rects so their
+    /// bounding box fills the input frame edge-to-edge.  Relative positions
+    /// and per-screen aspect ratios are preserved.  Maximises sampled pixels.
+    pub fit_to_frame: bool,
 }
 
 impl Default for AutoDetectConfig {
@@ -78,11 +88,13 @@ impl Default for AutoDetectConfig {
         Self {
             expected_screens: 2,
             tag_family: AprilTagFamily::Tag36h11,
-            tag_size_ratio: 0.60, // Tag is ~60% of screen width for better detection resolution
+            tag_size_ratio: 0.60,
             default_aspect_ratio: AspectRatio::Ratio16_9,
-            region_padding: 0.0, // No padding by default
-            min_confidence: 10.0, // Minimum decision margin
+            region_padding: 0.0,
+            min_confidence: 10.0,
             tag_placement: TagPlacement::Centered,
+            input_aspect: 16.0 / 9.0,
+            fit_to_frame: true,
         }
     }
 }
@@ -183,7 +195,7 @@ impl AprilTagAutoDetector {
             screens.len()
         );
 
-        // Log detection details
+        // Log detection details before fit
         for screen in &screens {
             log::info!(
                 "Screen {}: {:?} {:?} at ({:.3}, {:.3}), size {:.3}x{:.3}",
@@ -197,7 +209,74 @@ impl AprilTagAutoDetector {
             );
         }
 
+        // Scale all screens so their bounding box fills the input frame
+        if self.config.fit_to_frame && screens.len() > 0 {
+            Self::fit_screens_to_frame(&mut screens);
+            log::info!("fit_to_frame applied — screens after scaling:");
+            for screen in &screens {
+                log::info!(
+                    "  Screen {}: at ({:.3}, {:.3}), size {:.3}x{:.3}",
+                    screen.screen_id, screen.center.x, screen.center.y,
+                    screen.width, screen.height
+                );
+            }
+        }
+
         Ok(screens)
+    }
+
+    /// Uniformly scale and centre all detected screens so that the bounding box
+    /// of the group fills the input texture edge-to-edge in the tightest axis.
+    ///
+    /// Relative positions and per-screen aspect ratios are preserved.
+    fn fit_screens_to_frame(screens: &mut Vec<DetectedScreen>) {
+        // Bounding box of all screen corners
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+
+        for s in screens.iter() {
+            for c in &s.corners {
+                min_x = min_x.min(c.x);
+                min_y = min_y.min(c.y);
+                max_x = max_x.max(c.x);
+                max_y = max_y.max(c.y);
+            }
+        }
+
+        let bbox_w = max_x - min_x;
+        let bbox_h = max_y - min_y;
+        if bbox_w <= 0.0 || bbox_h <= 0.0 {
+            return;
+        }
+
+        // Uniform scale: expand until the larger bounding-box axis reaches 1.0
+        let scale = (1.0_f32 / bbox_w).min(1.0 / bbox_h);
+
+        // Pivot from the bounding-box centre → map to UV centre (0.5, 0.5)
+        let cx = (min_x + max_x) / 2.0;
+        let cy = (min_y + max_y) / 2.0;
+
+        let tx = |v: f32| (v - cx) * scale + 0.5;
+        let ty = |v: f32| (v - cy) * scale + 0.5;
+
+        for s in screens.iter_mut() {
+            s.corners = [
+                Vec2::new(tx(s.corners[0].x), ty(s.corners[0].y)),
+                Vec2::new(tx(s.corners[1].x), ty(s.corners[1].y)),
+                Vec2::new(tx(s.corners[2].x), ty(s.corners[2].y)),
+                Vec2::new(tx(s.corners[3].x), ty(s.corners[3].y)),
+            ];
+            s.center = Vec2::new(tx(s.center.x), ty(s.center.y));
+            s.width  *= scale;
+            s.height *= scale;
+        }
+
+        log::info!(
+            "fit_to_frame: bbox ({:.3},{:.3})→({:.3},{:.3}) scale={:.3}",
+            min_x, min_y, max_x, max_y, scale
+        );
     }
 
     /// Convert AprilTag detection to screen region
@@ -223,7 +302,7 @@ impl AprilTagAutoDetector {
         // Detect orientation from tag rotation
         let orientation = Orientation::detect_from_corners(&detection.corners);
         
-        // Debug: log corner positions (AprilTag order: TR, TL, BL, BR)
+        // Debug: log corner positions (AprilTag order: LB, RB, RT, LT)
         log::info!("Tag {} corners: [0]=({:.0},{:.0}), [1]=({:.0},{:.0}), [2]=({:.0},{:.0}), [3]=({:.0},{:.0})",
             detection.id,
             detection.corners[0][0], detection.corners[0][1],
@@ -231,13 +310,17 @@ impl AprilTagAutoDetector {
             detection.corners[2][0], detection.corners[2][1],
             detection.corners[3][0], detection.corners[3][1]);
 
-        // Detect aspect ratio from tag distortion FIRST
-        // AprilTags are square, so distortion tells us the screen's aspect ratio
-        let tag_aspect = self.calculate_tag_aspect_ratio(&corners);
-        let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(tag_aspect);
-        
-        // Calculate image aspect ratio (width/height in pixels)
+        // Image aspect ratio (width/height in pixels)
         let img_aspect = img_width / img_height;
+
+        // Detect aspect ratio from tag distortion FIRST.
+        // calculate_tag_aspect_ratio returns a UV-normalised ratio (width_uv/height_uv).
+        // Converting to a pixel ratio (multiply by img_aspect = W/H) gives the true
+        // width-to-height pixel ratio of the tag as seen in the camera, which directly
+        // reflects how the screen hardware has distorted the (square) tag content.
+        let tag_aspect_uv = self.calculate_tag_aspect_ratio(&corners);
+        let tag_pixel_ratio = tag_aspect_uv * img_aspect;
+        let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(tag_pixel_ratio);
         
         // Debug: log raw tag dimensions in pixels
         let tag_width_pixels = (detection.corners[1][0] - detection.corners[0][0]).abs();
@@ -245,17 +328,21 @@ impl AprilTagAutoDetector {
         log::info!("Tag {} raw pixels: width={:.1}, height={:.1}, aspect={:.3}, orientation={:?}",
             detection.id, tag_width_pixels, tag_height_pixels, tag_width_pixels/tag_height_pixels, orientation);
         
-        // Calculate screen dimensions and corners based on placement
-        // Use the detected aspect ratio, not the default config
+        // Calculate screen dimensions and corners based on placement.
+        // NOTE: pass self.config.input_aspect (live input texture aspect) NOT img_aspect
+        // (detection photo aspect). The source_rect height must be correct in INPUT UV
+        // space, and the input texture is typically 16:9 regardless of what camera took
+        // the detection photo.
+        let input_aspect = self.config.input_aspect;
         let (screen_width, screen_height, screen_corners) = match self.config.tag_placement {
             TagPlacement::Centered => {
-                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, img_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, input_aspect)
             }
             TagPlacement::TopLeft => {
-                self.calculate_corner_screen_with_aspect(&corners, center, orientation, detected_aspect, img_aspect)
+                self.calculate_corner_screen_with_aspect(&corners, center, orientation, detected_aspect, input_aspect)
             }
             _ => {
-                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, img_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, input_aspect)
             }
         };
         
@@ -283,80 +370,67 @@ impl AprilTagAutoDetector {
         }
     }
     
-    /// Detect screen aspect ratio from tag distortion
-    /// 
-    /// AprilTags are perfectly square (1:1). When 16:9 content is displayed:
-    /// - On 4:3 screen (squished): tag appears tall/narrow, aspect ≈ 0.75
-    /// - On 16:9 screen (native): tag appears square, aspect ≈ 1.0
-    /// - On 21:9 screen (stretched): tag appears wide, aspect ≈ 1.33
-    /// 
-    /// NOTE: Camera perspective significantly distorts measurements. A 16:9 screen viewed
-    /// at an angle may measure as low as 0.68 due to foreshortening.
-    fn detect_aspect_ratio_from_tag_aspect(&self, tag_aspect: f32) -> AspectRatio {
-        // These thresholds account for perspective distortion from angled cameras
-        // - Strongly squeezed (< 0.60) = definitely 4:3 CRT
-        // - Moderate squeeze (0.60-0.68) = likely 4:3
-        // - Near square (> 0.68) = 16:9 with perspective distortion
-        
-        log::info!("Tag aspect ratio detection: {:.3}", tag_aspect);
-        
-        if tag_aspect < 0.60 {
-            // Strongly squeezed - definitely 4:3 CRT
-            log::info!("  -> Detected as 4:3 (strong squeeze, tag_aspect < 0.60)");
+    /// Detect screen aspect ratio from the tag's **pixel** aspect ratio.
+    ///
+    /// When a square tag is displayed as 16:9 content on a screen the hardware
+    /// maps that content to the screen's native aspect, distorting the tag:
+    ///   - 4:3  screen: ratio ≈ (4/3)/(16/9) = 0.75  (tag squashed horizontally)
+    ///   - 16:9 screen: ratio ≈ 1.0                   (tag undistorted)
+    ///   - 21:9 screen: ratio ≈ 21/16 ≈ 1.31          (tag stretched horizontally)
+    ///
+    /// Thresholds are midpoints between adjacent expected values (±15% perspective slack).
+    fn detect_aspect_ratio_from_tag_aspect(&self, tag_pixel_ratio: f32) -> AspectRatio {
+        log::info!("Tag pixel aspect ratio detection: {:.3}", tag_pixel_ratio);
+
+        if tag_pixel_ratio < 0.875 {
+            log::info!("  -> Detected as 4:3 (pixel ratio {:.3} < 0.875)", tag_pixel_ratio);
             AspectRatio::Ratio4_3
-        } else if tag_aspect < 0.68 {
-            // Moderately squeezed - likely 4:3
-            log::info!("  -> Detected as 4:3 (moderate squeeze, 0.60 <= tag_aspect < 0.68)");
-            AspectRatio::Ratio4_3
-        } else if tag_aspect < 1.25 {
-            // Near square (0.68 - 1.25) - this captures 16:9 screens
-            // even with significant perspective distortion
-            log::info!("  -> Detected as 16:9 (near square, 0.68 <= tag_aspect < 1.25)");
+        } else if tag_pixel_ratio < 1.156 {
+            log::info!("  -> Detected as 16:9 (pixel ratio {:.3} in [0.875, 1.156))", tag_pixel_ratio);
             AspectRatio::Ratio16_9
-        } else if tag_aspect < 1.60 {
-            // Stretched - 21:9 ultrawide
-            log::info!("  -> Detected as 21:9 (stretched, 1.25 <= tag_aspect < 1.60)");
-            AspectRatio::Ratio21_9
         } else {
-            // Very stretched
-            log::info!("  -> Detected as 21:9 (very stretched, tag_aspect >= 1.60)");
+            log::info!("  -> Detected as 21:9 (pixel ratio {:.3} >= 1.156)", tag_pixel_ratio);
             AspectRatio::Ratio21_9
         }
     }
     
-    /// Calculate centered screen with a specific aspect ratio
-    /// 
-    /// The detected tag corners are on the inner fiducial border (80% of marker).
-    /// The marker is centered and fills tag_size_ratio of the screen.
+    /// Calculate centered screen dimensions from the detected tag.
+    ///
+    /// Tags are square in the output 3×3 grid (640×360 cells), so at 100% marker size
+    /// the tag fills 100% of the output cell HEIGHT (360px) and 56.25% of WIDTH.
+    /// Therefore `tag_size_ratio` = fraction of **screen HEIGHT** the marker occupies.
+    /// We measure fiducial HEIGHT and derive screen width from the known screen aspect.
+    ///
+    /// `img_aspect` here is the **input texture aspect** (e.g. 16/9), passed from
+    /// `self.config.input_aspect` — NOT the detection photo aspect.
     fn calculate_centered_screen_with_aspect(
         &self,
         tag_corners: &[Vec2; 4],
         tag_center: Vec2,
         aspect_ratio: AspectRatio,
-        img_aspect: f32,
+        img_aspect: f32, // = input_aspect from config
     ) -> (f32, f32, [Vec2; 4]) {
-        // Calculate detected tag height (inner fiducial = ~80% of full marker)
-        let left_height = (tag_corners[3] - tag_corners[0]).length();
-        let right_height = (tag_corners[2] - tag_corners[1]).length();
+        // Corners: [TL, TR, BR, BL]
+        // Measure the fiducial's VERTICAL extent (left and right edges).
+        // tag_size_ratio = marker_height / screen_height  →  use height to recover height.
+        let left_height  = (tag_corners[3] - tag_corners[0]).length(); // |BL - TL|
+        let right_height = (tag_corners[2] - tag_corners[1]).length(); // |BR - TR|
         let fiducial_height_uv = (left_height + right_height) / 2.0;
-        
-        // The fiducial is 80% of the full marker, and marker fills tag_size_ratio of screen
-        // So: fiducial = 0.8 * marker, and marker = slider * screen
-        // Therefore: screen = fiducial / (0.8 * slider)
-        let marker_to_fiducial_ratio = 0.8;
-        let actual_fill = self.config.tag_size_ratio * marker_to_fiducial_ratio;
-        let screen_height_uv = fiducial_height_uv / actual_fill.clamp(0.1, 1.0);
-        
-        // Screen width in UV coordinates:
-        // screen_width_uv = screen_height_uv * (screen_aspect / image_aspect)
+
+        // fiducial = 0.8 × marker,  marker = tag_size_ratio × screen_height
+        // → screen_height_uv = fiducial_height_uv / (0.8 × tag_size_ratio)
+        let marker_to_fiducial_ratio = 0.8_f32;
+        let actual_fill_h = self.config.tag_size_ratio * marker_to_fiducial_ratio;
+        let screen_height_uv = fiducial_height_uv / actual_fill_h.clamp(0.1, 1.0);
+
+        // Derive screen width from the known screen aspect and the input texture aspect.
+        // In UV space:  screen_w_UV / screen_h_UV = screen_aspect / input_aspect
         let screen_aspect = aspect_ratio.as_f32();
-        let screen_width_uv = screen_height_uv * (screen_aspect / img_aspect);
-        
-        // Calculate half dimensions
-        let half_width = screen_width_uv / 2.0;
+        let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
+
+        let half_width  = screen_width_uv  / 2.0;
         let half_height = screen_height_uv / 2.0;
 
-        // Calculate screen corners centered on tag_center
         let screen_corners = [
             Vec2::new(tag_center.x - half_width, tag_center.y - half_height), // TL
             Vec2::new(tag_center.x + half_width, tag_center.y - half_height), // TR
@@ -364,13 +438,17 @@ impl AprilTagAutoDetector {
             Vec2::new(tag_center.x - half_width, tag_center.y + half_height), // BL
         ];
 
-        log::debug!("Screen calc: aspect={:?}, img_aspect={:.3}, height={:.3}, width={:.3}",
+        log::info!("Screen calc: aspect={:?}, input_aspect={:.3}, height_uv={:.3}, width_uv={:.3}",
             aspect_ratio.name(), img_aspect, screen_height_uv, screen_width_uv);
 
         (screen_width_uv, screen_height_uv, screen_corners)
     }
     
-    /// Calculate corner screen with a specific aspect ratio
+    /// Calculate corner-placed screen dimensions from the detected tag.
+    ///
+    /// Same axis convention as `calculate_centered_screen_with_aspect`:
+    /// recover screen WIDTH from the horizontal fiducial measurement, then
+    /// derive height from the screen aspect ratio.
     fn calculate_corner_screen_with_aspect(
         &self,
         tag_corners: &[Vec2; 4],
@@ -379,17 +457,14 @@ impl AprilTagAutoDetector {
         aspect_ratio: AspectRatio,
         img_aspect: f32,
     ) -> (f32, f32, [Vec2; 4]) {
-        // Calculate detected fiducial size (inner 80% of marker)
-        let fiducial_width = (tag_corners[1] - tag_corners[0]).length();
-        let fiducial_height = (tag_corners[3] - tag_corners[0]).length();
-        
-        // Scale fiducial to screen: fiducial is 80% of marker, marker fills slider% of screen
-        let marker_to_fiducial_ratio = 0.8;
-        let actual_fill = self.config.tag_size_ratio * marker_to_fiducial_ratio;
-        let scale_factor = 1.0 / actual_fill.clamp(0.1, 1.0);
-        let screen_height_uv = fiducial_height * scale_factor;
+        // Vertical fiducial extent → screen height (tag fills 100% of screen height)
+        let fiducial_height = (tag_corners[3] - tag_corners[0]).length(); // |BL - TL|
+
+        let marker_to_fiducial_ratio = 0.8_f32;
+        let actual_fill_h = self.config.tag_size_ratio * marker_to_fiducial_ratio;
+        let screen_height_uv = fiducial_height / actual_fill_h.clamp(0.1, 1.0);
         let screen_aspect = aspect_ratio.as_f32();
-        let screen_width_uv = screen_height_uv * (screen_aspect / img_aspect);
+        let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
 
         // Calculate screen corners based on tag placement (top-left)
         let tag_tl = tag_corners[0];
@@ -801,7 +876,7 @@ mod tests {
     fn test_auto_detect_config_default() {
         let config = AutoDetectConfig::default();
         assert_eq!(config.expected_screens, 2);
-        assert_eq!(config.tag_size_ratio, 0.25);
+        assert_eq!(config.tag_size_ratio, 0.60);
         assert!(matches!(config.default_aspect_ratio, AspectRatio::Ratio16_9));
         assert!(matches!(config.tag_placement, TagPlacement::Centered));
     }

@@ -36,18 +36,17 @@ pub struct ControlGui {
     ndi_sources: Vec<String>,
     syphon_servers: Vec<String>,
     
-    // Selection state
+    // Which input slot is shown in the Inputs tab (0 = Input 1, 1 = Input 2)
+    active_input_slot: i32,
+
+    // Per-slot selection state for each source type
     selected_webcam1: i32,
     selected_webcam2: i32,
     selected_ndi1: i32,
     selected_ndi2: i32,
     selected_syphon1: i32,
     selected_syphon2: i32,
-    
-    // Device selector popup
-    show_device_selector: bool,
-    selector_for_input: i32, // 1 or 2
-    
+
     // Mapping tab input selection (0 = Input 1, 1 = Input 2)
     mapping_tab_input: i32,
     
@@ -107,14 +106,13 @@ impl ControlGui {
             webcam_devices: Vec::new(),
             ndi_sources: Vec::new(),
             syphon_servers: Vec::new(),
+            active_input_slot: 0,
             selected_webcam1: 0,
             selected_webcam2: 0,
             selected_ndi1: 0,
             selected_ndi2: 0,
             selected_syphon1: 0,
             selected_syphon2: 0,
-            show_device_selector: false,
-            selector_for_input: 1,
             mapping_tab_input: 0,
             ndi_output_name,
             syphon_server_name,
@@ -158,37 +156,45 @@ impl ControlGui {
         self.output_preview_texture_id = Some(texture_id);
     }
     
-    /// Refresh all device lists
+    /// Kick off a non-blocking device refresh.
+    ///
+    /// Webcam and NDI discovery run on a background thread (via InputManager).
+    /// Results arrive in SharedState.discovered_webcams / discovered_ndi_sources
+    /// and are synced into the GUI's local caches in `sync_discovered_devices()`.
+    ///
+    /// Syphon server discovery is fast (reads a local directory service) so it
+    /// still runs inline.
     pub fn refresh_devices(&mut self) {
-        #[cfg(feature = "webcam")]
+        // Issue the async discovery command through SharedState.
         {
-            self.webcam_devices = crate::input::list_cameras();
-            log::info!("Found {} webcam devices", self.webcam_devices.len());
+            let mut state = self.shared_state.lock().unwrap();
+            state.input1_command = crate::core::state::InputCommand::RefreshDevices;
         }
-        
-        self.ndi_sources = crate::input::list_ndi_sources(2000);
-        log::info!("Found {} NDI sources", self.ndi_sources.len());
-        
+
+        // Syphon is a local directory-service lookup — fast enough to run inline.
         #[cfg(target_os = "macos")]
         {
-            // Try discovery multiple times (servers may take time to appear)
             let discovery = crate::input::syphon_input::SyphonDiscovery::new();
-            let mut servers = discovery.discover_servers();
-            
-            // If no servers found, retry once after a short delay
-            if servers.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                servers = discovery.discover_servers();
-            }
-            
-            // Use display_name() which handles empty names by falling back to app_name
+            let servers = discovery.discover_servers();
             self.syphon_servers = servers
                 .into_iter()
                 .map(|s| s.display_name().to_string())
                 .collect();
             log::info!("Found {} Syphon servers", self.syphon_servers.len());
-            for (i, name) in self.syphon_servers.iter().enumerate() {
-                log::info!("  [{}] {}", i, name);
+        }
+    }
+
+    /// Sync discovered device lists from SharedState into local GUI caches.
+    ///
+    /// Call this each frame in `build_ui()` to pick up background discovery results.
+    pub fn sync_discovered_devices(&mut self) {
+        let state = self.shared_state.lock().unwrap();
+        if !state.discovered_webcams.is_empty() || !state.discovered_ndi_sources.is_empty() {
+            if state.discovered_webcams != self.webcam_devices {
+                self.webcam_devices = state.discovered_webcams.clone();
+            }
+            if state.discovered_ndi_sources != self.ndi_sources {
+                self.ndi_sources = state.discovered_ndi_sources.clone();
             }
         }
     }
@@ -208,6 +214,8 @@ impl ControlGui {
     /// - Top-right: Input preview with draggable sampling boxes (25%)
     /// - Bottom-right: Output preview with grid divisions (25%)
     pub fn build_ui(&mut self, ui: &mut imgui::Ui) {
+        // Pull in any device discovery results that arrived this frame.
+        self.sync_discovered_devices();
         // Sync mapping changes to shared state
         self.sync_mapping_to_state();
         
@@ -236,136 +244,133 @@ impl ControlGui {
                 
                 // Main tab bar with content
                 self.build_main_tabs(ui);
-                
-                // Device selector window (separate popup window)
-                if self.show_device_selector {
-                    self.build_device_selector(ui);
-                }
             });
         
-        // === TOP-RIGHT: Input Preview ===
-        let input_preview_pos = [left_panel_width + padding, padding];
-        let input_preview_size = [right_panel_width - padding, right_panel_height - padding];
-        
-        ui.window("Input Preview")
-            .position(input_preview_pos, imgui::Condition::FirstUseEver)
-            .size(input_preview_size, imgui::Condition::FirstUseEver)
-            .movable(true)
-            .collapsible(true)
-            .resizable(true)
-            .build(|| {
-                self.build_input_preview_window(ui, input_preview_size);
-            });
-        
-        // === BOTTOM-RIGHT: Output Preview ===
-        let output_preview_pos = [left_panel_width + padding, right_panel_height + padding * 2.0];
-        let output_preview_size = [right_panel_width - padding, right_panel_height - padding];
-        
-        ui.window("Output Preview")
-            .position(output_preview_pos, imgui::Condition::FirstUseEver)
-            .size(output_preview_size, imgui::Condition::FirstUseEver)
-            .movable(true)
-            .collapsible(true)
-            .resizable(true)
-            .build(|| {
-                self.build_output_preview_window(ui, output_preview_size);
-            });
+        // === PREVIEW WINDOWS (conditional on show_preview) ===
+        let show_preview = {
+            let state = self.shared_state.lock().unwrap();
+            state.show_preview
+        };
+
+        if show_preview {
+            let preview_x = left_panel_width + padding;
+            let preview_w = (window_width - preview_x - padding).max(200.0);
+            let preview_h = (window_height / 2.0 - 15.0).max(150.0);
+
+            ui.window("Input Preview")
+                .position([preview_x, padding], imgui::Condition::FirstUseEver)
+                .size([preview_w, preview_h], imgui::Condition::FirstUseEver)
+                .movable(true)
+                .collapsible(true)
+                .resizable(true)
+                .build(|| {
+                    self.build_input_preview(ui);
+                });
+
+            ui.window("Output Preview")
+                .position([preview_x, window_height / 2.0 + 5.0], imgui::Condition::FirstUseEver)
+                .size([preview_w, preview_h], imgui::Condition::FirstUseEver)
+                .movable(true)
+                .collapsible(true)
+                .resizable(true)
+                .build(|| {
+                    self.build_output_preview(ui);
+                });
+        }
     }
     
-    /// Build the input preview window with draggable sampling boxes
-    fn build_input_preview_window(&mut self, ui: &imgui::Ui, available_size: [f32; 2]) {
-        let window_width = available_size[0];
-        let window_height = available_size[1];
-        
-        // Show input texture
+    /// Input preview — fills the window with center-crop UV, then draws overlays.
+    fn build_input_preview(&mut self, ui: &imgui::Ui) {
         if let Some(texture_id) = self.input_preview_texture_id {
-            // Get actual input resolution from shared state and update aspect ratio
             let (input_width, input_height) = {
                 let state = self.shared_state.lock().unwrap();
                 (state.ndi_input1.width, state.ndi_input1.height)
             };
-            let actual_aspect = input_width as f32 / input_height as f32;
-            
-            // Use actual input aspect ratio if input is active
-            let aspect = if actual_aspect > 0.1 && actual_aspect < 10.0 {
-                actual_aspect
-            } else {
-                self.preview_aspect_ratio
-            };
-            let max_width = window_width - 16.0;
-            let max_height = window_height - 40.0; // Leave room for title/padding
-            
-            // Calculate size that fits within bounds
-            let mut tex_width = max_width;
-            let mut tex_height = tex_width / aspect;
-            
-            if tex_height > max_height {
-                tex_height = max_height;
-                tex_width = tex_height * aspect;
+
+            let avail = ui.content_region_avail();
+            if avail[0] <= 0.0 || avail[1] <= 0.0 {
+                return;
             }
-            
-            // Center the texture in the window
-            let x_offset = (window_width - tex_width) / 2.0;
-            let y_offset = 30.0; // Below window title bar
-            
-            // Position cursor and draw image with full UV coordinates
-            ui.set_cursor_pos([x_offset, y_offset]);
-            
-            // Get the actual screen position where the image will be drawn
+
+            // UV extent of actual content within the fixed 1920×1080 preview texture.
+            let content_u = if input_width > 0 { (input_width as f32 / 1920.0).min(1.0) } else { 1.0 };
+            let content_v = if input_height > 0 { (input_height as f32 / 1080.0).min(1.0) } else { 1.0 };
+
+            let content_aspect = if input_width > 0 && input_height > 0 {
+                input_width as f32 / input_height as f32
+            } else {
+                16.0 / 9.0
+            };
+            let container_aspect = avail[0] / avail[1];
+
+            // Center-crop: image fills the container; excess cropped evenly on each side.
+            let (uv0, uv1) = if content_aspect > container_aspect {
+                let visible = container_aspect / content_aspect;
+                let pad = (1.0 - visible) / 2.0;
+                ([pad * content_u, 0.0], [(1.0 - pad) * content_u, content_v])
+            } else {
+                let visible = content_aspect / container_aspect;
+                let pad = (1.0 - visible) / 2.0;
+                ([0.0, pad * content_v], [content_u, (1.0 - pad) * content_v])
+            };
+
+            // Record top-left screen pos for overlays BEFORE drawing the image.
             let image_pos = ui.cursor_screen_pos();
-            
-            // Draw the texture with explicit UVs to show full texture
-            imgui::Image::new(texture_id, [tex_width, tex_height])
-                .uv0([0.0, 0.0])  // Top-left of texture
-                .uv1([1.0, 1.0])  // Bottom-right of texture
+
+            imgui::Image::new(texture_id, avail)
+                .uv0(uv0)
+                .uv1(uv1)
                 .build(ui);
-            
-            // Draw draggable sampling boxes overlay using screen coordinates
-            self.draw_sampling_boxes(ui, image_pos, [tex_width, tex_height]);
+
+            // Overlay: detected screen regions and mapping boxes.
+            self.draw_sampling_boxes(ui, image_pos, avail);
         } else {
             ui.text_disabled("No input preview available");
         }
     }
-    
-    /// Build the output preview window with grid divisions
-    fn build_output_preview_window(&mut self, ui: &imgui::Ui, available_size: [f32; 2]) {
-        let window_width = available_size[0];
-        let window_height = available_size[1];
-        
-        // Show output texture
+
+    /// Output preview — fills the window with center-crop UV, then draws grid overlay.
+    fn build_output_preview(&mut self, ui: &imgui::Ui) {
         if let Some(texture_id) = self.output_preview_texture_id {
-            // Use available space, maintaining aspect ratio
-            let aspect = 16.0 / 9.0;
-            let max_width = window_width - 16.0;
-            let max_height = window_height - 40.0;
-            
-            // Calculate size that fits within bounds
-            let mut tex_width = max_width;
-            let mut tex_height = tex_width / aspect;
-            
-            if tex_height > max_height {
-                tex_height = max_height;
-                tex_width = tex_height * aspect;
+            let (internal_width, internal_height) = {
+                let state = self.shared_state.lock().unwrap();
+                (state.internal_width, state.internal_height)
+            };
+
+            let avail = ui.content_region_avail();
+            if avail[0] <= 0.0 || avail[1] <= 0.0 {
+                return;
             }
-            
-            // Center the texture
-            let x_offset = (window_width - tex_width) / 2.0;
-            let y_offset = 30.0;
-            
-            // Position cursor and draw image
-            ui.set_cursor_pos([x_offset, y_offset]);
-            
-            // Get actual screen position
+
+            let content_u = (internal_width as f32 / 1920.0).min(1.0);
+            let content_v = (internal_height as f32 / 1080.0).min(1.0);
+
+            let content_aspect = if internal_width > 0 && internal_height > 0 {
+                internal_width as f32 / internal_height as f32
+            } else {
+                16.0 / 9.0
+            };
+            let container_aspect = avail[0] / avail[1];
+
+            let (uv0, uv1) = if content_aspect > container_aspect {
+                let visible = container_aspect / content_aspect;
+                let pad = (1.0 - visible) / 2.0;
+                ([pad * content_u, 0.0], [(1.0 - pad) * content_u, content_v])
+            } else {
+                let visible = content_aspect / container_aspect;
+                let pad = (1.0 - visible) / 2.0;
+                ([0.0, pad * content_v], [content_u, (1.0 - pad) * content_v])
+            };
+
             let image_pos = ui.cursor_screen_pos();
-            
-            // Draw texture with full UVs
-            imgui::Image::new(texture_id, [tex_width, tex_height])
-                .uv0([0.0, 0.0])
-                .uv1([1.0, 1.0])
+
+            imgui::Image::new(texture_id, avail)
+                .uv0(uv0)
+                .uv1(uv1)
                 .build(ui);
-            
-            // Draw grid divisions overlay
-            self.draw_grid_divisions(ui, image_pos, [tex_width, tex_height]);
+
+            // Overlay: grid divisions / mapped cell highlights.
+            self.draw_grid_divisions(ui, image_pos, avail);
         } else {
             ui.text_disabled("No output preview available");
         }
@@ -433,28 +438,10 @@ impl ControlGui {
             }
         }
         
-        // Draw grid lines
+        // Cell dimensions (needed for mapping box positions below)
         let cell_width = tex_width / grid_cols as f32;
         let cell_height = tex_height / grid_rows as f32;
-        
-        // Draw vertical grid lines
-        for col in 1..grid_cols {
-            let x = pos[0] + col as f32 * cell_width;
-            draw_list
-                .add_line([x, pos[1]], [x, pos[1] + tex_height], [0.5, 0.5, 0.5, 0.5])
-                .thickness(1.0)
-                .build();
-        }
-        
-        // Draw horizontal grid lines
-        for row in 1..grid_rows {
-            let y = pos[1] + row as f32 * cell_height;
-            draw_list
-                .add_line([pos[0], y], [pos[0] + tex_width, y], [0.5, 0.5, 0.5, 0.5])
-                .thickness(1.0)
-                .build();
-        }
-        
+
         // Draw mapping boxes (highlighted cells) - only if no detected screens
         if detected_screens.is_empty() {
             for mapping in &mappings {
@@ -565,7 +552,18 @@ impl ControlGui {
                     // Exit handled by app
                 }
             });
-            
+
+            ui.menu("View", || {
+                let show_preview = {
+                    let state = self.shared_state.lock().unwrap();
+                    state.show_preview
+                };
+                if ui.menu_item_config("Show Previews").selected(show_preview).build() {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.show_preview = !state.show_preview;
+                }
+            });
+
             ui.menu("Devices", || {
                 if ui.menu_item("Refresh All") {
                     self.refresh_devices();
@@ -607,70 +605,181 @@ impl ControlGui {
         }
     }
     
-    /// Build the Inputs tab
+    /// Build the Inputs tab — template aesthetic with inline source sections.
     fn build_inputs_tab(&mut self, ui: &imgui::Ui) {
-        ui.text("Input Sources");
+        let is_discovering = {
+            let state = self.shared_state.lock().unwrap();
+            state.discovering_devices
+        };
+
+        ui.text("Video Input Sources");
         ui.separator();
-        
-        // Input 1 section
-        ui.text_colored([0.0, 1.0, 1.0, 1.0], "Input 1 (Primary)");
-        self.build_input_section(ui, 1);
-        
+        ui.spacing();
+
+        // ── Refresh button ────────────────────────────────────────────────────
+        if is_discovering {
+            ui.text_colored([1.0, 0.8, 0.2, 1.0], "Discovering sources...");
+        } else {
+            let _c1 = ui.push_style_color(imgui::StyleColor::Button,        [0.2, 0.6, 0.8, 1.0]);
+            let _c2 = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.3, 0.7, 0.9, 1.0]);
+            let _c3 = ui.push_style_color(imgui::StyleColor::ButtonActive,  [0.1, 0.5, 0.7, 1.0]);
+            if ui.button_with_size("Refresh Sources", [ui.content_region_avail()[0], 30.0]) {
+                self.refresh_devices();
+            }
+        }
+
         ui.spacing();
         ui.separator();
         ui.spacing();
-        
-        // Input 2 section
-        ui.text_colored([1.0, 0.5, 0.0, 1.0], "Input 2 (Secondary)");
-        self.build_input_section(ui, 2);
-        
+
+        // ── Input slot selector ───────────────────────────────────────────────
+        ui.radio_button("Input 1", &mut self.active_input_slot, 0);
+        ui.same_line();
+        ui.radio_button("Input 2", &mut self.active_input_slot, 1);
+
+        ui.spacing();
+
+        // ── Per-slot source sections ──────────────────────────────────────────
+        let slot = self.active_input_slot + 1; // convert to 1-based
+        self.build_input_slot_sources(ui, slot);
+
+        // ── Mix controls ──────────────────────────────────────────────────────
         ui.spacing();
         ui.separator();
-        
-        // Mix controls
-        ui.text("Mix Controls");
+        ui.spacing();
+        ui.text("Mix");
         let mut mix_amount = {
             let state = self.shared_state.lock().unwrap();
             state.mix_amount
         };
-        let old_mix = mix_amount;
-        if ui.slider("Mix Amount", 0.0, 1.0, &mut mix_amount) {
+        if ui.slider("##mix", 0.0, 1.0, &mut mix_amount) {
             let mut state = self.shared_state.lock().unwrap();
             state.mix_amount = mix_amount;
-            log::debug!("Mix slider changed: {:.2} -> {:.2}", old_mix, mix_amount);
         }
         ui.same_line();
-        ui.text(format!("{:.0}% Input 2 (current: {:.2})", mix_amount * 100.0, mix_amount));
+        ui.text(format!("{:.0}%  In2", mix_amount * 100.0));
     }
-    
-    /// Build a single input section
-    fn build_input_section(&mut self, ui: &imgui::Ui, input_num: i32) {
-        let (is_active, source_name, input_type_str) = {
+
+    /// Build the inline source sections for one input slot (template aesthetic).
+    fn build_input_slot_sources(&mut self, ui: &imgui::Ui, input_num: i32) {
+        let (is_active, source_name) = {
             let state = self.shared_state.lock().unwrap();
-            let input_state = if input_num == 1 { &state.ndi_input1 } else { &state.ndi_input2 };
-            (
-                input_state.is_active,
-                input_state.source_name.clone(),
-                if input_state.is_active { "Active" } else { "None" },
-            )
+            let s = if input_num == 1 { &state.ndi_input1 } else { &state.ndi_input2 };
+            (s.is_active, s.source_name.clone())
         };
-        
-        // Status display
-        ui.text(format!("Status: {}", input_type_str));
+
+        // Status
         if is_active {
-            ui.text(format!("Source: {}", source_name));
+            ui.text_colored([0.0, 1.0, 0.0, 1.0], format!("Active: {}", source_name));
+        } else {
+            ui.text_colored([0.5, 0.5, 0.5, 1.0], "No input active");
         }
-        
-        // Action buttons
-        if ui.button(format!("Select Source##{}", input_num)) {
-            self.selector_for_input = input_num;
-            self.show_device_selector = true;
-            self.refresh_devices();
+
+        ui.spacing();
+
+        // ── Webcam ────────────────────────────────────────────────────────────
+        #[cfg(feature = "webcam")]
+        {
+            ui.text_colored([0.0, 1.0, 1.0, 1.0], "Webcam");
+            let devices = self.webcam_devices.clone();
+            if devices.is_empty() {
+                ui.text_disabled("No webcams found");
+            } else {
+                let names: Vec<&str> = devices.iter().map(|s| s.as_str()).collect();
+                let sel = if input_num == 1 { &mut self.selected_webcam1 } else { &mut self.selected_webcam2 };
+                let mut sel_usize = *sel as usize;
+                ui.combo_simple_string(format!("##wcam{}", input_num), &mut sel_usize, &names);
+                *sel = sel_usize as i32;
+                if ui.button(format!("Start Webcam##wcam{}", input_num)) {
+                    let idx = *sel as usize;
+                    self.select_webcam(input_num, idx);
+                }
+            }
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
         }
-        
+
+        // ── NDI ───────────────────────────────────────────────────────────────
+        {
+            ui.text_colored([0.0, 1.0, 1.0, 1.0], "NDI");
+            let ndi_all = self.ndi_sources.clone();
+            let ndi: Vec<&str> = ndi_all.iter()
+                .filter(|s| !s.to_lowercase().contains("obs"))
+                .map(|s| s.as_str())
+                .collect();
+            if ndi.is_empty() {
+                ui.text_disabled("No NDI sources found");
+            } else {
+                let sel = if input_num == 1 { &mut self.selected_ndi1 } else { &mut self.selected_ndi2 };
+                let mut sel_usize = (*sel as usize).min(ndi.len().saturating_sub(1));
+                ui.combo_simple_string(format!("##ndi{}", input_num), &mut sel_usize, &ndi);
+                *sel = sel_usize as i32;
+                if ui.button(format!("Start NDI##ndi{}", input_num)) {
+                    let name = ndi.get(sel_usize).map(|s| s.to_string()).unwrap_or_default();
+                    self.select_ndi(input_num, name);
+                }
+            }
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
+        }
+
+        // ── OBS (via NDI) ─────────────────────────────────────────────────────
+        {
+            ui.text_colored([0.0, 1.0, 1.0, 1.0], "OBS (via NDI)");
+            let ndi_all = self.ndi_sources.clone();
+            let obs: Vec<&str> = ndi_all.iter()
+                .filter(|s| s.to_lowercase().contains("obs"))
+                .map(|s| s.as_str())
+                .collect();
+            if obs.is_empty() {
+                ui.text_disabled("No OBS sources found");
+            } else {
+                // OBS shares the NDI selection index
+                let sel = if input_num == 1 { &mut self.selected_ndi1 } else { &mut self.selected_ndi2 };
+                let mut sel_usize = (*sel as usize).min(obs.len().saturating_sub(1));
+                ui.combo_simple_string(format!("##obs{}", input_num), &mut sel_usize, &obs);
+                *sel = sel_usize as i32;
+                if ui.button(format!("Start OBS##obs{}", input_num)) {
+                    let name = obs.get(sel_usize).map(|s| s.to_string()).unwrap_or_default();
+                    self.select_obs(input_num, name);
+                }
+            }
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
+        }
+
+        // ── Syphon (macOS only) ───────────────────────────────────────────────
+        #[cfg(target_os = "macos")]
+        {
+            ui.text_colored([0.0, 1.0, 1.0, 1.0], "Syphon (macOS)");
+            let servers = self.syphon_servers.clone();
+            if servers.is_empty() {
+                ui.text_disabled("No Syphon servers found");
+            } else {
+                let names: Vec<&str> = servers.iter().map(|s| s.as_str()).collect();
+                let sel = if input_num == 1 { &mut self.selected_syphon1 } else { &mut self.selected_syphon2 };
+                let mut sel_usize = (*sel as usize).min(names.len().saturating_sub(1));
+                ui.combo_simple_string(format!("##syphon{}", input_num), &mut sel_usize, &names);
+                *sel = sel_usize as i32;
+                if ui.button(format!("Start Syphon##syphon{}", input_num)) {
+                    let name = servers.get(sel_usize).cloned().unwrap_or_default();
+                    self.select_syphon(input_num, name);
+                }
+            }
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
+        }
+
+        // ── Stop / Edit mapping ───────────────────────────────────────────────
         if is_active {
-            ui.same_line();
-            if ui.button(format!("Stop##{}", input_num)) {
+            let _c1 = ui.push_style_color(imgui::StyleColor::Button,        [0.7, 0.2, 0.2, 1.0]);
+            let _c2 = ui.push_style_color(imgui::StyleColor::ButtonHovered, [0.9, 0.3, 0.3, 1.0]);
+            let _c3 = ui.push_style_color(imgui::StyleColor::ButtonActive,  [0.6, 0.1, 0.1, 1.0]);
+            if ui.button(format!("Stop Input {}##stop{}", input_num, input_num)) {
                 let mut state = self.shared_state.lock().unwrap();
                 if input_num == 1 {
                     state.input1_command = InputCommand::StopInput;
@@ -678,10 +787,11 @@ impl ControlGui {
                     state.input2_command = InputCommand::StopInput;
                 }
             }
-            
+            drop(_c3); drop(_c2); drop(_c1);
             ui.same_line();
-            if ui.button(format!("Edit Mapping##{}", input_num)) {
+            if ui.button(format!("Edit Mapping##map{}", input_num)) {
                 self.current_tab = MainTab::Mapping;
+                self.mapping_tab_input = input_num - 1;
             }
         }
     }
@@ -1023,12 +1133,12 @@ impl ControlGui {
         ui.text_colored([0.0, 1.0, 1.0, 1.0], "AprilTag Auto-Detection");
         ui.text_disabled("Detect screen positions, aspect ratios, and orientations");
         
-        // Show current grid configuration
+        // Show current grid configuration (using OUTPUT grid since pattern goes to displays)
         ui.text_disabled(format!(
-            "Pattern Grid: {}×{} ({} cells)",
-            self.matrix_input_grid_cols,
-            self.matrix_input_grid_rows,
-            self.matrix_input_grid_cols * self.matrix_input_grid_rows
+            "Pattern Grid: {}×{} ({} cells) - matches output grid",
+            self.matrix_output_grid_cols,
+            self.matrix_output_grid_rows,
+            self.matrix_output_grid_cols * self.matrix_output_grid_rows
         ));
         
         // Marker size (as percentage of screen) - can go up to 100% for maximum detection resolution
@@ -1274,142 +1384,6 @@ impl ControlGui {
         }
     }
     
-    /// Build the device selector popup window
-    fn build_device_selector(&mut self, ui: &imgui::Ui) {
-        let input_num = self.selector_for_input;
-        
-        ui.window(format!("Select Source for Input {}", input_num))
-            .size([350.0, 400.0], imgui::Condition::FirstUseEver)
-            .build(|| {
-                if ui.button("Refresh") {
-                    self.refresh_devices();
-                }
-                
-                ui.separator();
-                
-                // Source type tabs
-                if let Some(tab_bar) = ui.tab_bar("SourceTypeTabs") {
-                    // Webcam tab
-                    #[cfg(feature = "webcam")]
-                    if let Some(tab) = ui.tab_item("Webcam") {
-                        let devices: Vec<(usize, String)> = self.webcam_devices.iter()
-                            .enumerate()
-                            .map(|(i, d)| (i, d.clone()))
-                            .collect();
-                        
-                        if devices.is_empty() {
-                            ui.text("No webcam devices found");
-                        } else {
-                            for (i, device) in devices {
-                                let is_selected = if input_num == 1 { 
-                                    self.selected_webcam1 == i as i32 
-                                } else { 
-                                    self.selected_webcam2 == i as i32 
-                                };
-                                
-                                if ui.selectable_config(&device)
-                                    .selected(is_selected)
-                                    .build() 
-                                {
-                                    if input_num == 1 {
-                                        self.selected_webcam1 = i as i32;
-                                    } else {
-                                        self.selected_webcam2 = i as i32;
-                                    }
-                                    self.select_webcam(input_num, i);
-                                    self.show_device_selector = false;
-                                }
-                            }
-                        }
-                    }
-                    
-                    // NDI tab
-                    if let Some(tab) = ui.tab_item("NDI") {
-                        let sources: Vec<(usize, String)> = self.ndi_sources.iter()
-                            .enumerate()
-                            .filter(|(_, s)| !s.to_lowercase().contains("obs"))
-                            .map(|(i, s)| (i, s.clone()))
-                            .collect();
-                        
-                        if sources.is_empty() {
-                            ui.text("No NDI sources found");
-                        } else {
-                            for (i, source) in sources {
-                                let is_selected = if input_num == 1 { 
-                                    self.selected_ndi1 == i as i32 
-                                } else { 
-                                    self.selected_ndi2 == i as i32 
-                                };
-                                
-                                if ui.selectable_config(&source)
-                                    .selected(is_selected)
-                                    .build() 
-                                {
-                                    if input_num == 1 {
-                                        self.selected_ndi1 = i as i32;
-                                    } else {
-                                        self.selected_ndi2 = i as i32;
-                                    }
-                                    self.select_ndi(input_num, source);
-                                    self.show_device_selector = false;
-                                }
-                            }
-                        }
-                    }
-                    
-                    // OBS tab
-                    if let Some(tab) = ui.tab_item("OBS") {
-                        let obs_sources: Vec<(usize, String)> = self.ndi_sources.iter()
-                            .enumerate()
-                            .filter(|(_, s)| s.to_lowercase().contains("obs"))
-                            .map(|(i, s)| (i, s.clone()))
-                            .collect();
-                        
-                        if obs_sources.is_empty() {
-                            ui.text("No OBS NDI sources found");
-                        } else {
-                            for (i, source) in obs_sources {
-                                if ui.button(format!("{}##obs{}", source, i)) {
-                                    self.select_obs(input_num, source);
-                                    self.show_device_selector = false;
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Syphon tab (macOS only)
-                    #[cfg(target_os = "macos")]
-                    if let Some(tab) = ui.tab_item("Syphon") {
-                        let servers: Vec<(usize, String)> = self.syphon_servers.iter()
-                            .enumerate()
-                            .map(|(i, s)| (i, s.clone()))
-                            .collect();
-                        
-                        if servers.is_empty() {
-                            ui.text("No Syphon servers found");
-                        } else {
-                            for (i, server) in servers {
-                                if ui.button(format!("{}##syphon{}", server, i)) {
-                                    if input_num == 1 {
-                                        self.selected_syphon1 = i as i32;
-                                    } else {
-                                        self.selected_syphon2 = i as i32;
-                                    }
-                                    self.select_syphon(input_num, server);
-                                    self.show_device_selector = false;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                ui.separator();
-                
-                if ui.button("Cancel") {
-                    self.show_device_selector = false;
-                }
-            });
-    }
     
     /// Select webcam for input
     fn select_webcam(&mut self, input_num: i32, device_index: usize) {
@@ -1646,12 +1620,13 @@ impl ControlGui {
     /// Generate and display AprilTag pattern for calibration
     fn generate_and_show_apriltag_pattern(&mut self) {
         let marker_size = self.matrix_apriltag_marker_size;
-        
-        // Use configured input grid size (not expected_screens)
-        let grid_cols = self.matrix_input_grid_cols as u32;
-        let grid_rows = self.matrix_input_grid_rows as u32;
+
+        // Use the OUTPUT grid size so the pattern matches the
+        // actual number of connected displays.
+        let grid_cols = self.matrix_output_grid_cols as u32;
+        let grid_rows = self.matrix_output_grid_rows as u32;
         let total_cells = grid_cols * grid_rows;
-        
+
         // Calculate actual marker dimensions for logging
         let output_width = 1920u32;
         let output_height = 1080u32;
@@ -1660,7 +1635,7 @@ impl ControlGui {
         let marker_pixels = (display_width.min(display_height) as f32 * marker_size) as u32;
         
         log::info!(
-            "Generating AprilTag pattern: {}x{} output, {}x{} grid, display_region={}x{}, marker_size={}px ({:.0}%)",
+            "Generating AprilTag pattern: {}x{} output, {}x{} OUTPUT grid, display_region={}x{}, marker_size={}px ({:.0}%)",
             output_width, output_height, grid_cols, grid_rows, 
             display_width, display_height, marker_pixels, marker_size * 100.0
         );
@@ -1679,10 +1654,12 @@ impl ControlGui {
                 let rgba_data: Vec<u8> = frame.pixels()
                     .flat_map(|p| [p[0], p[1], p[2], p[3]])
                     .collect();
+                let data_len = rgba_data.len();
                 state.matrix_test_pattern = Some((rgba_data, frame.width(), frame.height()));
+                state.matrix_showing_test_pattern = true;  // Ensure flag is set
                 log::info!(
-                    "Generated AprilTag pattern for {} cells ({}x{} grid), {}x{} frame",
-                    total_cells, grid_cols, grid_rows, frame.width(), frame.height()
+                    "Generated AprilTag pattern for {} cells ({}x{} grid), {}x{} frame, {} bytes",
+                    total_cells, grid_cols, grid_rows, frame.width(), frame.height(), data_len
                 );
             }
             Err(e) => {
@@ -1713,9 +1690,14 @@ impl ControlGui {
     }
     
     /// Run AprilTag detection from a photo file
+    /// Automatically enhances the image for better detection:
+    /// - Min exposure (darken to increase tag contrast)
+    /// - Max brightness (+100)
+    /// - Max contrast (+100)
     fn run_apriltag_detection_from_photo(&mut self, path: &std::path::Path) {
-        // Load image
-        let image = match image::open(path) {
+        // Load image and convert to grayscale immediately
+        // AprilTag detection works on grayscale, so enhancements are more effective here
+        let gray_image = match image::open(path) {
             Ok(img) => img.to_luma8(),
             Err(e) => {
                 log::error!("Failed to load photo: {}", e);
@@ -1723,17 +1705,33 @@ impl ControlGui {
             }
         };
         
-        let (width, height) = (image.width(), image.height());
+        let (width, height) = (gray_image.width(), gray_image.height());
         
         // Update preview aspect ratio to match photo
         self.preview_aspect_ratio = width as f32 / height as f32;
         log::info!("Photo loaded: {}x{}, aspect ratio: {:.3}", width, height, self.preview_aspect_ratio);
         
-        // Create detector with current settings
+        // Auto-enhance grayscale image for better AprilTag detection
+        log::info!("Auto-enhancing grayscale image: brightness=+100, contrast=+100, exposure=-100 (0.2x)");
+        let image = Self::enhance_grayscale_for_apriltag(gray_image);
+        
+        // Save enhanced image for debugging (convert to RGB for easier viewing)
+        if let Err(e) = self.save_debug_image(path, &image) {
+            log::warn!("Failed to save debug image: {}", e);
+        }
+        
+        // Create detector with current settings.
+        // input_aspect must match the live input texture (internal resolution),
+        // NOT the detection photo aspect — photo aspect is only used for tag distortion classification.
+        let input_aspect = {
+            let state = self.shared_state.lock().unwrap();
+            state.internal_width as f32 / state.internal_height as f32
+        };
         let detector = AprilTagAutoDetector::with_config(AutoDetectConfig {
             expected_screens: self.matrix_apriltag_expected_screens as usize,
             tag_size_ratio: self.matrix_apriltag_marker_size,
             tag_placement: TagPlacement::Centered,
+            input_aspect,
             ..Default::default()
         });
         
@@ -1827,5 +1825,63 @@ impl ControlGui {
         // 2. Convert to grayscale using texture_to_gray_image()
         // 3. Run AprilTagAutoDetector::detect_screens()
         // 4. Apply the resulting configuration
+    }
+    
+    /// Enhance grayscale image for better AprilTag detection
+    /// 
+    /// Applies iPhone-style photo editing directly in grayscale space.
+    /// IMPORTANT: Order matters! Must match iPhone workflow:
+    /// 1. Exposure first (-100 = darken to 0.2x)
+    /// 2. Then Brightness (+100)
+    /// 3. Then Contrast (+100)
+    fn enhance_grayscale_for_apriltag(image: image::GrayImage) -> image::GrayImage {
+        use image::imageops::{brighten, contrast};
+        
+        // Step 1: Min Exposure FIRST (darken by factor of 0.2)
+        // This is critical - must happen before brightness to prevent blowout
+        let mut image = image;
+        let exposure_factor = 0.2f32;
+        for pixel in image.pixels_mut() {
+            pixel[0] = (pixel[0] as f32 * exposure_factor) as u8;
+        }
+        
+        // Step 2: Max Brightness (+100)
+        let image = brighten(&image, 100);
+        
+        // Step 3: Max Contrast (+100)
+        let image = contrast(&image, 100.0);
+        
+        image
+    }
+    
+    /// Save debug/enhanced image to config directory
+    fn save_debug_image(&self, original_path: &std::path::Path, enhanced: &image::GrayImage) -> anyhow::Result<std::path::PathBuf> {
+        use std::fs;
+        use std::path::PathBuf;
+        use chrono::Local;
+        
+        // Create debug directory
+        let debug_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rusty_mapper")
+            .join("debug_images");
+        
+        fs::create_dir_all(&debug_dir)?;
+        
+        // Generate filename with timestamp: enhanced_YYYYMMDD_HHMMSS_originalname.png
+        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
+        let original_name = original_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let debug_filename = format!("enhanced_{}_{}.png", timestamp, original_name);
+        let debug_path = debug_dir.join(&debug_filename);
+        
+        // Convert to RGB for easier viewing/debugging
+        let rgb_enhanced: image::RgbImage = image::DynamicImage::ImageLuma8(enhanced.clone()).to_rgb8();
+        rgb_enhanced.save(&debug_path)?;
+        log::info!("Saved enhanced debug image to: {:?}", debug_path);
+        
+        Ok(debug_path)
     }
 }
