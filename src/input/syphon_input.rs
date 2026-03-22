@@ -21,7 +21,7 @@ pub struct SyphonFrame {
 }
 
 /// Zero-copy Syphon input receiver using native BGRA
-/// 
+///
 /// Uses syphon-wgpu with Bgra format for maximum performance.
 /// The received texture can be accessed directly for GPU-only pipelines.
 pub struct SyphonInputReceiver {
@@ -31,6 +31,9 @@ pub struct SyphonInputReceiver {
     resolution: (u32, u32),
     device: Option<Arc<wgpu::Device>>,
     queue: Option<Arc<wgpu::Queue>>,
+    /// Cached owned texture for GPU-to-GPU copy (reused across frames)
+    #[cfg(target_os = "macos")]
+    pub(crate) cached_texture: Option<wgpu::Texture>,
 }
 
 impl SyphonInputReceiver {
@@ -43,6 +46,8 @@ impl SyphonInputReceiver {
             resolution: (1920, 1080),
             device: None,
             queue: None,
+            #[cfg(target_os = "macos")]
+            cached_texture: None,
         }
     }
     
@@ -86,35 +91,42 @@ impl SyphonInputReceiver {
     }
     
     /// Try to receive a new frame as wgpu texture (zero-copy path)
-    /// 
+    ///
     /// Returns None if no new frame is available.
-    /// The returned texture is in Bgra8Unorm format (native Syphon format).
-    pub fn try_receive_texture(&mut self) -> Option<wgpu::Texture> {
+    /// The returned texture reference is in Bgra8Unorm format (native Syphon format).
+    /// The texture is reused across frames to avoid per-frame GPU allocation.
+    pub fn try_receive_texture(&mut self) -> Option<&wgpu::Texture> {
         #[cfg(target_os = "macos")]
         {
             let client = self.client.as_mut()?;
             let device = self.device.as_ref()?;
             let queue = self.queue.as_ref()?;
-            
+
             if client.receive_texture(device, queue) {
                 if let Some(src) = client.output_texture() {
                     let (w, h) = (src.width(), src.height());
                     self.resolution = (w, h);
 
-                    // GPU-to-GPU copy: create an owned texture the caller can hold.
-                    let dst = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("syphon_input_frame"),
-                        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: src.format(),
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::COPY_DST
-                            | wgpu::TextureUsages::COPY_SRC,
-                        view_formats: &[],
+                    // Recreate cached texture only if dimensions or format changed
+                    let needs_new = self.cached_texture.as_ref().map_or(true, |t| {
+                        t.width() != w || t.height() != h || t.format() != src.format()
                     });
+                    if needs_new {
+                        self.cached_texture = Some(device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some("syphon_input_frame"),
+                            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: src.format(),
+                            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                | wgpu::TextureUsages::COPY_DST
+                                | wgpu::TextureUsages::COPY_SRC,
+                            view_formats: &[],
+                        }));
+                    }
 
+                    let dst = self.cached_texture.as_ref().unwrap();
                     let mut encoder = device.create_command_encoder(
                         &wgpu::CommandEncoderDescriptor { label: Some("syphon_copy") },
                     );
@@ -125,27 +137,28 @@ impl SyphonInputReceiver {
                     );
                     queue.submit(std::iter::once(encoder.finish()));
 
-                    return Some(dst);
+                    return self.cached_texture.as_ref();
                 }
             }
         }
-        
+
         None
     }
     
     /// Try to receive a new frame (CPU fallback for compatibility)
-    /// 
+    ///
     /// Note: This reads back from GPU and is not zero-copy.
     /// Prefer `try_receive_texture()` for performance.
     pub fn try_receive(&mut self) -> Option<SyphonFrame> {
-        let texture = self.try_receive_texture()?;
+        // Receive into cached texture first
+        let _ = self.try_receive_texture()?;
+        let texture = self.cached_texture.as_ref()?;
         let width = texture.width();
         let height = texture.height();
-        
+
         // CPU readback for compatibility with existing CPU-based pipeline
-        // This is NOT zero-copy - for true zero-copy, use try_receive_texture()
-        let data = self.read_texture_to_bgra(&texture)?;
-        
+        let data = self.read_texture_to_bgra(texture)?;
+
         Some(SyphonFrame {
             width,
             height,
@@ -389,7 +402,7 @@ impl SyphonInputIntegration {
     }
     
     /// Get latest frame as texture (zero-copy path - preferred)
-    pub fn get_frame_texture(&mut self) -> Option<wgpu::Texture> {
+    pub fn get_frame_texture(&mut self) -> Option<&wgpu::Texture> {
         self.receiver.as_mut()?.try_receive_texture()
     }
     

@@ -81,16 +81,19 @@ pub struct WgpuEngine {
     
     // Output manager (NDI, Syphon, etc.)
     output_manager: OutputManager,
-    
-    // GPU readback buffers for output
-    readback_buffers: Vec<wgpu::Buffer>,
-    current_readback_buffer: usize,
-    
+
     // Uniform buffers for mapping parameters
     uniform_bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer_input1: wgpu::Buffer,
     uniform_buffer_input2: wgpu::Buffer,
     uniform_buffer_mix: wgpu::Buffer,
+    /// Cached uniform bind group (recreated only when uniform buffers change identity)
+    uniform_bind_group: wgpu::BindGroup,
+
+    // Cached blit pipeline (created once, reused every frame)
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_bind_group_layout: wgpu::BindGroupLayout,
+    blit_sampler: wgpu::Sampler,
     
     // Video wall renderer
     video_wall_renderer: Option<VideoWallRenderer>,
@@ -343,19 +346,115 @@ impl WgpuEngine {
             usage: wgpu::BufferUsages::VERTEX,
         });
         
-        // Create triple-buffered readback buffers for NDI
-        let readback_buffer_size = (internal_width * internal_height * 4) as u64;
-        let readback_buffers: Vec<_> = (0..3)
-            .map(|i| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(&format!("Readback Buffer {}", i)),
-                    size: readback_buffer_size,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                })
-            })
-            .collect();
-        
+        // Create cached uniform bind group
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Uniform Bind Group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer_input1.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniform_buffer_input2.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer_mix.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Create cached blit pipeline (reused every frame)
+        let blit_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Blit Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Blit Shader"),
+            source: wgpu::ShaderSource::Wgsl(r#"
+                struct VertexOutput {
+                    @builtin(position) position: vec4<f32>,
+                    @location(0) texcoord: vec2<f32>,
+                };
+
+                @vertex
+                fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> VertexOutput {
+                    var out: VertexOutput;
+                    out.position = vec4<f32>(position, 0.0, 1.0);
+                    out.texcoord = texcoord;
+                    return out;
+                }
+
+                @group(0) @binding(0)
+                var source_tex: texture_2d<f32>;
+                @group(0) @binding(1)
+                var source_sampler: sampler;
+
+                @fragment
+                fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+                    return textureSample(source_tex, source_sampler, in.texcoord);
+                }
+            "#.into()),
+        });
+
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Blit Pipeline Layout"),
+            bind_group_layouts: &[&blit_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Blit Pipeline"),
+            layout: Some(&blit_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Ok(Self {
             instance: instance.clone(),
             adapter,
@@ -375,12 +474,14 @@ impl WgpuEngine {
             vertex_buffer,
             frame_count: 0,
             output_manager: OutputManager::new(),
-            readback_buffers,
-            current_readback_buffer: 0,
             uniform_bind_group_layout,
             uniform_buffer_input1,
             uniform_buffer_input2,
             uniform_buffer_mix,
+            uniform_bind_group,
+            blit_pipeline,
+            blit_bind_group_layout,
+            blit_sampler,
             video_wall_renderer: None,
             video_wall_enabled: false,
             video_wall_output_texture: None,
@@ -659,30 +760,7 @@ impl WgpuEngine {
         self.queue.write_buffer(&self.uniform_buffer_input2, 0, bytemuck::bytes_of(&mapping2));
         self.queue.write_buffer(&self.uniform_buffer_mix, 0, bytemuck::bytes_of(&mix_settings));
         
-        // Create uniform bind group with all 3 bindings
-        let uniform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Uniform Bind Group"),
-            layout: &self.uniform_bind_group_layout,
-            entries: &[
-                // Binding 0: Input 1 mapping
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer_input1.as_entire_binding(),
-                },
-                // Binding 1: Input 2 mapping
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.uniform_buffer_input2.as_entire_binding(),
-                },
-                // Binding 2: Mix settings
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniform_buffer_mix.as_entire_binding(),
-                },
-            ],
-        });
-        
-        // Render to render target
+        // Render to render target (uniform bind group is cached; buffers updated via write_buffer)
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Main Render Pass"),
@@ -702,7 +780,7 @@ impl WgpuEngine {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.set_bind_group(1, &uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.uniform_bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
         
@@ -787,45 +865,17 @@ impl WgpuEngine {
         self.frame_count += 1;
     }
     
-    /// Blit texture to surface
+    /// Blit texture to surface using cached pipeline
     fn blit_to_surface(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         surface_view: &wgpu::TextureView,
         source_view: &wgpu::TextureView,
     ) {
-        // Create temporary bind group for blitting
-        let bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Blit Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        
+        // Only the bind group is created per-frame (binds the source texture view)
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Blit Bind Group"),
-            layout: &bind_group_layout,
+            layout: &self.blit_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -833,73 +883,11 @@ impl WgpuEngine {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
                 },
             ],
         });
-        
-        // Simple blit shader with aspect ratio preservation
-        // Uses the vertex texcoords directly instead of calculating from frag_coord
-        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Blit Shader"),
-            source: wgpu::ShaderSource::Wgsl(r#"
-                struct VertexOutput {
-                    @builtin(position) position: vec4<f32>,
-                    @location(0) texcoord: vec2<f32>,
-                };
-                
-                @vertex
-                fn vs_main(@location(0) position: vec2<f32>, @location(1) texcoord: vec2<f32>) -> VertexOutput {
-                    var out: VertexOutput;
-                    out.position = vec4<f32>(position, 0.0, 1.0);
-                    out.texcoord = texcoord;
-                    return out;
-                }
-                
-                @group(0) @binding(0)
-                var source_tex: texture_2d<f32>;
-                @group(0) @binding(1)
-                var source_sampler: sampler;
-                
-                @fragment
-                fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-                    return textureSample(source_tex, source_sampler, in.texcoord);
-                }
-            "#.into()),
-        });
-        
-        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Blit Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        
-        let pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Blit Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Vertex::desc()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: self.config.format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        
+
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Blit Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -914,48 +902,11 @@ impl WgpuEngine {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        
-        render_pass.set_pipeline(&pipeline);
+
+        render_pass.set_pipeline(&self.blit_pipeline);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_bind_group(0, &bind_group, &[]);
         render_pass.draw(0..6, 0..1);
-    }
-    
-    /// Copy render target to readback buffer for NDI
-    fn copy_for_ndi(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        let buffer_idx = self.current_readback_buffer;
-        let buffer = &self.readback_buffers[buffer_idx];
-        
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.render_target.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(self.render_target.width * 4),
-                    rows_per_image: Some(self.render_target.height),
-                },
-            },
-            wgpu::Extent3d {
-                width: self.render_target.width,
-                height: self.render_target.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        
-        self.current_readback_buffer = (self.current_readback_buffer + 1) % self.readback_buffers.len();
-    }
-    
-    /// Process NDI readback (simplified - in production use async mapping)
-    fn process_ndi_readback(&mut self) {
-        // In a full implementation, we'd map the buffer and send to NDI
-        // For now, this is a placeholder
-        // The async approach from rustjay_waaaves is more sophisticated
     }
     
     /// Upload calibration pattern for video wall calibration

@@ -28,10 +28,8 @@ grafton-ndi = "0.11"
 # Threading
 crossbeam = "0.8"
 
-# Audio processing
+# Audio capture
 cpal = "0.15"
-rustfft = "6.2"
-realfft = "3.4"
 
 # Video input (optional - disable if libclang not available)
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }

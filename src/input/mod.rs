@@ -128,9 +128,6 @@ pub struct InputSource {
     #[cfg(target_os = "macos")]
     syphon_queue: Option<Arc<wgpu::Queue>>,
     
-    // Latest Syphon texture (zero-copy path)
-    #[cfg(target_os = "macos")]
-    syphon_texture: Option<wgpu::Texture>,
 }
 
 impl InputSource {
@@ -152,8 +149,6 @@ impl InputSource {
             syphon_device: None,
             #[cfg(target_os = "macos")]
             syphon_queue: None,
-            #[cfg(target_os = "macos")]
-            syphon_texture: None,
         }
     }
     
@@ -292,7 +287,6 @@ impl InputSource {
         #[cfg(target_os = "macos")]
         {
             self.syphon_receiver = None;
-            self.syphon_texture = None;
             // Keep syphon_device and syphon_queue for potential reconnect
         }
         
@@ -337,12 +331,11 @@ impl InputSource {
         // Handle Syphon frames (zero-copy texture path)
         #[cfg(target_os = "macos")]
         if let Some(ref mut syphon) = self.syphon_receiver {
-            // Use zero-copy texture receive path
+            // Receive into the receiver's cached texture (no per-frame allocation)
             if let Some(texture) = syphon.try_receive_texture() {
                 self.resolution = (texture.width(), texture.height());
-                self.syphon_texture = Some(texture);
                 self.has_new_frame = true;
-                log::trace!("[Input] Syphon texture received: {}x{}", 
+                log::trace!("[Input] Syphon texture received: {}x{}",
                     self.resolution.0, self.resolution.1);
             }
         }
@@ -359,19 +352,19 @@ impl InputSource {
         self.current_frame.take()
     }
     
-    /// Take the Syphon texture if available (zero-copy path, macOS only)
-    /// 
+    /// Get the Syphon texture reference if available (zero-copy path, macOS only)
+    ///
     /// This is the preferred method for Syphon input as it avoids CPU readback.
-    /// Returns None if not on macOS or no texture available.
+    /// The texture is owned by the receiver and reused across frames.
     #[cfg(target_os = "macos")]
-    pub fn take_syphon_texture(&mut self) -> Option<wgpu::Texture> {
+    pub fn take_syphon_texture(&mut self) -> Option<&wgpu::Texture> {
         self.has_new_frame = false;
-        self.syphon_texture.take()
+        self.syphon_receiver.as_ref()?.cached_texture.as_ref()
     }
-    
+
     /// Stub for non-macOS platforms
     #[cfg(not(target_os = "macos"))]
-    pub fn take_syphon_texture(&mut self) -> Option<std::convert::Infallible> {
+    pub fn take_syphon_texture(&mut self) -> Option<&wgpu::Texture> {
         None
     }
     

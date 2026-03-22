@@ -156,7 +156,7 @@ impl OutputManager {
                     // Stride-strip: readback rows are aligned to
                     // COPY_BYTES_PER_ROW_ALIGNMENT; NDI wants tight BGRA.
                     let tight = strip_row_padding(&data, w, h);
-                    ndi.submit_frame(&tight, w, h);
+                    ndi.submit_frame(tight, w, h);
                 }
             }
 

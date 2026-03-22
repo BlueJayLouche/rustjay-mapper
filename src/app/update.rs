@@ -29,36 +29,38 @@ impl App {
         let showing_matrix_pattern = self.shared_state.lock().unwrap().matrix_showing_test_pattern;
 
         // --- Input 1: collect frame data while manager is in scope ---
-        struct Input1Frame {
-            #[cfg(target_os = "macos")]
-            syphon: Option<wgpu::Texture>,
-            cpu: Option<(Vec<u8>, u32, u32)>,
-        }
+        // --- Input 1: Syphon zero-copy path (texture stays owned by receiver) ---
+        let input1_syphon_dims: Option<(u32, u32)>;
+        let input1_cpu: Option<(Vec<u8>, u32, u32)>;
 
-        let input1 = if manager.input1.has_frame() && !showing_matrix_pattern {
+        if manager.input1.has_frame() && !showing_matrix_pattern {
             #[cfg(target_os = "macos")]
             {
                 if manager.input1.input_type() == crate::input::InputType::Syphon {
-                    Input1Frame {
-                        syphon: manager.input1.take_syphon_texture(),
-                        cpu: None,
+                    // Get a reference to the receiver's cached texture and copy now
+                    if let Some(texture) = manager.input1.take_syphon_texture() {
+                        let (w, h) = (texture.width(), texture.height());
+                        if let Some(ref mut engine) = self.output_engine {
+                            engine.input_texture_manager.update_input1_from_texture(texture);
+                        }
+                        input1_syphon_dims = Some((w, h));
+                    } else {
+                        input1_syphon_dims = None;
                     }
+                    input1_cpu = None;
                 } else {
                     let frame = manager.input1.take_frame();
                     let res = manager.input1.resolution();
-                    Input1Frame {
-                        syphon: None,
-                        cpu: frame.map(|f| (f, res.0, res.1)),
-                    }
+                    input1_cpu = frame.map(|f| (f, res.0, res.1));
+                    input1_syphon_dims = None;
                 }
             }
             #[cfg(not(target_os = "macos"))]
             {
                 let frame = manager.input1.take_frame();
                 let res = manager.input1.resolution();
-                Input1Frame {
-                    cpu: frame.map(|f| (f, res.0, res.1)),
-                }
+                input1_cpu = frame.map(|f| (f, res.0, res.1));
+                input1_syphon_dims = None;
             }
         } else {
             if showing_matrix_pattern && manager.input1.has_frame() {
@@ -66,67 +68,57 @@ impl App {
                 #[cfg(target_os = "macos")]
                 let _ = manager.input1.take_syphon_texture();
             }
-            Input1Frame {
-                #[cfg(target_os = "macos")]
-                syphon: None,
-                cpu: None,
-            }
-        };
-
-        // --- Input 2: collect frame data while manager is in scope ---
-        struct Input2Frame {
-            #[cfg(target_os = "macos")]
-            syphon: Option<wgpu::Texture>,
-            cpu: Option<(Vec<u8>, u32, u32)>,
+            input1_syphon_dims = None;
+            input1_cpu = None;
         }
 
-        let input2 = if manager.input2.has_frame() {
+        // --- Input 2: Syphon zero-copy path ---
+        let input2_syphon_dims: Option<(u32, u32)>;
+        let input2_cpu: Option<(Vec<u8>, u32, u32)>;
+
+        if manager.input2.has_frame() {
             #[cfg(target_os = "macos")]
             {
                 if manager.input2.input_type() == crate::input::InputType::Syphon {
-                    Input2Frame {
-                        syphon: manager.input2.take_syphon_texture(),
-                        cpu: None,
+                    if let Some(texture) = manager.input2.take_syphon_texture() {
+                        let (w, h) = (texture.width(), texture.height());
+                        if let Some(ref mut engine) = self.output_engine {
+                            engine.input_texture_manager.update_input2_from_texture(texture);
+                        }
+                        input2_syphon_dims = Some((w, h));
+                    } else {
+                        input2_syphon_dims = None;
                     }
+                    input2_cpu = None;
                 } else {
                     let frame = manager.input2.take_frame();
                     let res = manager.input2.resolution();
-                    Input2Frame {
-                        syphon: None,
-                        cpu: frame.map(|f| (f, res.0, res.1)),
-                    }
+                    input2_cpu = frame.map(|f| (f, res.0, res.1));
+                    input2_syphon_dims = None;
                 }
             }
             #[cfg(not(target_os = "macos"))]
             {
                 let frame = manager.input2.take_frame();
                 let res = manager.input2.resolution();
-                Input2Frame {
-                    cpu: frame.map(|f| (f, res.0, res.1)),
-                }
+                input2_cpu = frame.map(|f| (f, res.0, res.1));
+                input2_syphon_dims = None;
             }
         } else {
-            Input2Frame {
-                #[cfg(target_os = "macos")]
-                syphon: None,
-                cpu: None,
-            }
-        };
+            input2_syphon_dims = None;
+            input2_cpu = None;
+        }
 
-        // manager borrow ends here — now safe to borrow self.output_engine and self.shared_state
+        // manager borrow ends here — now safe to borrow self.shared_state
 
-        // Upload input 1
+        // Update shared state for Syphon inputs
         #[cfg(target_os = "macos")]
-        if let Some(texture) = input1.syphon {
-            let (w, h) = (texture.width(), texture.height());
-            if let Some(ref mut engine) = self.output_engine {
-                engine.input_texture_manager.update_input1_from_texture(&texture);
-            }
+        if let Some((w, h)) = input1_syphon_dims {
             let mut state = self.shared_state.lock().unwrap();
             state.ndi_input1.width = w;
             state.ndi_input1.height = h;
         }
-        if let Some((frame_data, width, height)) = input1.cpu {
+        if let Some((frame_data, width, height)) = input1_cpu {
             if calibration_waiting {
                 let mut state = self.shared_state.lock().unwrap();
                 if let Some(ref mut calibration) = state.videowall_calibration {
@@ -144,16 +136,12 @@ impl App {
 
         // Upload input 2
         #[cfg(target_os = "macos")]
-        if let Some(texture) = input2.syphon {
-            let (w, h) = (texture.width(), texture.height());
-            if let Some(ref mut engine) = self.output_engine {
-                engine.input_texture_manager.update_input2_from_texture(&texture);
-            }
+        if let Some((w, h)) = input2_syphon_dims {
             let mut state = self.shared_state.lock().unwrap();
             state.ndi_input2.width = w;
             state.ndi_input2.height = h;
         }
-        if let Some((frame_data, width, height)) = input2.cpu {
+        if let Some((frame_data, width, height)) = input2_cpu {
             if let Some(ref mut engine) = self.output_engine {
                 engine.input_texture_manager.update_input2(&frame_data, width, height);
             }
@@ -305,24 +293,28 @@ impl App {
         };
 
         if let Some(ref mut renderer) = self.imgui_renderer {
+            // Single encoder + single submit for both preview copies
+            let mut encoder = renderer.device().create_command_encoder(
+                &wgpu::CommandEncoderDescriptor { label: Some("Preview Update Encoder") },
+            );
+            let mut did_work = false;
+
             if let (Some(input), Some(gui)) = (input_tex, self.control_gui.as_ref()) {
                 if let Some(preview_id) = gui.input_preview_texture_id {
-                    let mut encoder = renderer.device().create_command_encoder(
-                        &wgpu::CommandEncoderDescriptor { label: Some("Preview Update Encoder") },
-                    );
                     renderer.update_preview_texture(preview_id, input, &mut encoder);
-                    renderer.queue().submit(std::iter::once(encoder.finish()));
+                    did_work = true;
                 }
             }
 
             if let (Some(output), Some(gui)) = (output_tex, self.control_gui.as_ref()) {
                 if let Some(preview_id) = gui.output_preview_texture_id {
-                    let mut encoder = renderer.device().create_command_encoder(
-                        &wgpu::CommandEncoderDescriptor { label: Some("Preview Update Encoder") },
-                    );
                     renderer.update_preview_texture(preview_id, output, &mut encoder);
-                    renderer.queue().submit(std::iter::once(encoder.finish()));
+                    did_work = true;
                 }
+            }
+
+            if did_work {
+                renderer.queue().submit(std::iter::once(encoder.finish()));
             }
         }
     }

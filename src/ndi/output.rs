@@ -30,6 +30,8 @@ pub struct NdiOutputSender {
     include_alpha: bool,
     frame_tx: ChannelSender<FrameData>,
     running: Arc<AtomicBool>,
+    /// Thread handle — only the owner holds Some; clones hold None
+    thread_handle: Option<JoinHandle<()>>,
     /// Whether this is the original sender (owner) or a clone
     /// Only the owner should stop the thread on drop
     is_owner: bool,
@@ -74,10 +76,6 @@ impl NdiOutputSender {
             );
         });
         
-        // Leak the thread handle to prevent it from being dropped
-        // This keeps the thread running even if the handle goes out of scope
-        Box::leak(Box::new(thread_handle));
-        
         Ok(Self {
             name,
             width,
@@ -85,7 +83,8 @@ impl NdiOutputSender {
             include_alpha,
             frame_tx,
             running,
-            is_owner: true,  // This is the original sender
+            thread_handle: Some(thread_handle),
+            is_owner: true,
         })
     }
     
@@ -175,30 +174,30 @@ impl NdiOutputSender {
         
     }
     
-    /// Submit a frame for sending
-    /// 
+    /// Submit a frame for sending (takes ownership to avoid copies)
+    ///
     /// The data should be in BGRA format (native for macOS/NDI).
     /// No conversion is performed - data is sent directly to NDI.
     /// If the channel is full, the oldest frame will be dropped.
-    pub fn submit_frame(&self, bgra_data: &[u8], width: u32, height: u32) {
+    pub fn submit_frame(&self, bgra_data: Vec<u8>, width: u32, height: u32) {
         // Validate dimensions match
         if width != self.width || height != self.height {
             log::warn!("[NDI OUTPUT] Frame size mismatch: expected {}x{}, got {}x{}",
                 self.width, self.height, width, height);
             return;
         }
-        
+
         // Validate data is not empty
         if bgra_data.is_empty() {
             log::warn!("[NDI OUTPUT] Empty frame data received");
             return;
         }
-        
-        // Data is already BGRA, no conversion needed
+
+        // Data is already BGRA — take ownership, no copy
         let frame = FrameData {
             width,
             height,
-            data: bgra_data.to_vec(),
+            data: bgra_data,
             has_alpha: self.include_alpha,
             timestamp: Instant::now(),
         };
@@ -218,14 +217,16 @@ impl NdiOutputSender {
         }
     }
     
-    /// Stop the NDI sender
+    /// Stop the NDI sender and join the thread
     /// Only the owner should call this - clones share the running flag
     pub fn stop(&mut self) {
         if !self.is_owner {
-            // Clones don't stop the thread - only the owner does
             return;
         }
         self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
     }
     
     /// Check if sender is running
@@ -248,7 +249,8 @@ impl Clone for NdiOutputSender {
             include_alpha: self.include_alpha,
             frame_tx: self.frame_tx.clone(),
             running: Arc::clone(&self.running),
-            is_owner: false,  // Clones don't own the thread
+            thread_handle: None,
+            is_owner: false,
         }
     }
 }
