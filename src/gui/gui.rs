@@ -1238,7 +1238,8 @@ impl ControlGui {
         
         ui.same_line();
         
-        // Named save
+        // Named save - input field
+        ui.set_next_item_width(200.0);
         ui.input_text("##matrix_preset_name", &mut self.matrix_preset_name)
             .hint("Preset name...")
             .build();

@@ -269,6 +269,16 @@ impl ImGuiRenderer {
                         _ => {}
                     }
                 }
+                
+                // Handle character input for text fields (only on key press, not release)
+                if pressed {
+                    if let Key::Character(ch) = &event.logical_key {
+                        // Add character to ImGui input queue
+                        for c in ch.chars() {
+                            io.add_input_character(c);
+                        }
+                    }
+                }
             }
             _ => {}
         }
