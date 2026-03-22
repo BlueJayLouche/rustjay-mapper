@@ -1716,11 +1716,6 @@ impl ControlGui {
         log::info!("Auto-enhancing grayscale image: brightness=+100, contrast=+100, exposure=-100 (0.2x)");
         let image = Self::enhance_grayscale_for_apriltag(gray_image);
         
-        // Save enhanced image for debugging (convert to RGB for easier viewing)
-        if let Err(e) = self.save_debug_image(path, &image) {
-            log::warn!("Failed to save debug image: {}", e);
-        }
-        
         // Create detector with current settings.
         // input_aspect must match the live input texture (internal resolution),
         // NOT the detection photo aspect — photo aspect is only used for tag distortion classification.
@@ -1855,34 +1850,4 @@ impl ControlGui {
         image
     }
     
-    /// Save debug/enhanced image to config directory
-    fn save_debug_image(&self, original_path: &std::path::Path, enhanced: &image::GrayImage) -> anyhow::Result<std::path::PathBuf> {
-        use std::fs;
-        use std::path::PathBuf;
-        use chrono::Local;
-        
-        // Create debug directory
-        let debug_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rusty_mapper")
-            .join("debug_images");
-        
-        fs::create_dir_all(&debug_dir)?;
-        
-        // Generate filename with timestamp: enhanced_YYYYMMDD_HHMMSS_originalname.png
-        let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-        let original_name = original_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown");
-        let debug_filename = format!("enhanced_{}_{}.png", timestamp, original_name);
-        let debug_path = debug_dir.join(&debug_filename);
-        
-        // Convert to RGB for easier viewing/debugging
-        let rgb_enhanced: image::RgbImage = image::DynamicImage::ImageLuma8(enhanced.clone()).to_rgb8();
-        rgb_enhanced.save(&debug_path)?;
-        log::info!("Saved enhanced debug image to: {:?}", debug_path);
-        
-        Ok(debug_path)
-    }
 }
