@@ -399,10 +399,17 @@ impl ControlGui {
         if !detected_screens.is_empty() {
             for screen in &detected_screens {
                 // Convert normalized coordinates to screen coordinates
+                // For rotated screens, swap width/height for correct preview
+                let is_rotated = matches!(screen.orientation, 
+                    Orientation::Rotated90 | 
+                    Orientation::Rotated270);
+                let (w, h) = if is_rotated {
+                    (screen.height * tex_width, screen.width * tex_height)
+                } else {
+                    (screen.width * tex_width, screen.height * tex_height)
+                };
                 let x = pos[0] + screen.corners[0].0 * tex_width;
                 let y = pos[1] + screen.corners[0].1 * tex_height;
-                let w = screen.width * tex_width;
-                let h = screen.height * tex_height;
                 
                 // Draw detected region with different color for each screen
                 let color = match screen.screen_id % 3 {

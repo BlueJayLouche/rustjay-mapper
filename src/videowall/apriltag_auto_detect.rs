@@ -394,10 +394,9 @@ impl AprilTagAutoDetector {
                                  (detection.corners[2][0] - detection.corners[1][0]).powi(2)).sqrt();
         let fiducial_height_pixels = (left_edge_height + right_edge_height) / 2.0;
         
-        log::info!("Screen {}: aspect={:?}, size={:.0}x{:.0}px (fiducial={:.0}px, slider={:.0}%, actual_fill={:.1}%)",
-            detection.id, detected_aspect.name(), pixel_width, pixel_height, 
-            fiducial_height_pixels, self.config.tag_size_ratio * 100.0, 
-            self.config.tag_size_ratio * marker_to_fiducial * 100.0);
+        log::info!("Screen {}: aspect={:?}, uv_size={:.3}x{:.3}, size={:.0}x{:.0}px (fiducial={:.0}px)",
+            detection.id, detected_aspect.name(), screen_width, screen_height,
+            pixel_width, pixel_height, fiducial_height_pixels);
 
         DetectedScreen {
             screen_id: detection.id,
@@ -751,14 +750,21 @@ impl AprilTagAutoDetector {
             );
 
             // Create source rect from detected screen corners (normalized UV coordinates)
-            // CRITICAL: For rotated screens (90°/270°), swap width/height in source rect
-            // because the sampling region should be portrait (9:16) not landscape (16:9)
+            // CRITICAL: For rotated screens (90°/270°), the source rect must be portrait (9:16)
+            // not landscape (16:9) because that's the actual shape of the rotated screen
             let (src_width, src_height) = match screen.orientation {
                 Orientation::Rotated90 | Orientation::Rotated270 => {
                     // Portrait orientation - swap dimensions for sampling
+                    log::info!("Screen {} rotated {:?}: swapping {}x{} -> {}x{}", 
+                        screen.screen_id, screen.orientation,
+                        screen.width, screen.height, screen.height, screen.width);
                     (screen.height, screen.width)
                 }
-                _ => (screen.width, screen.height),
+                _ => {
+                    log::info!("Screen {} normal orientation: {}x{}", 
+                        screen.screen_id, screen.width, screen.height);
+                    (screen.width, screen.height)
+                }
             };
             
             let source_rect = super::Rect::new(
@@ -767,6 +773,8 @@ impl AprilTagAutoDetector {
                 src_width,           // Width (swapped for rotated screens)
                 src_height,          // Height (swapped for rotated screens)
             );
+            log::info!("Screen {} source rect: [{:.3}, {:.3}, {:.3}, {:.3}]", 
+                screen.screen_id, source_rect.x, source_rect.y, source_rect.width, source_rect.height);
 
             let mapping = GridCellMapping::new(idx, output_position)
                 .with_aspect_ratio(screen.aspect_ratio)
