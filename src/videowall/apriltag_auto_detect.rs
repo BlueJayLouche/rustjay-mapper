@@ -560,8 +560,12 @@ impl AprilTagAutoDetector {
         //
         // Derive screen width from the known screen aspect and the input texture aspect.
         // In UV space:  screen_w_UV / screen_h_UV = screen_aspect / input_aspect
+        // Calculate screen width from aspect ratio.
+        // For 16:9 screen: width = height * 1.778
+        // For 4:3 screen: width = height * 0.75
+        // (NO division by img_aspect - that incorrectly makes 16:9 screens square)
         let screen_aspect = aspect_ratio.as_f32();
-        let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
+        let screen_width_uv = screen_height_uv * screen_aspect;
 
         let half_width  = screen_width_uv  / 2.0;
         let half_height = screen_height_uv / 2.0;
@@ -598,8 +602,9 @@ impl AprilTagAutoDetector {
         let marker_to_fiducial_ratio = 0.8_f32;
         let actual_fill_h = self.config.tag_size_ratio * marker_to_fiducial_ratio;
         let screen_height_uv = fiducial_height / actual_fill_h.clamp(0.1, 1.0);
+        // Calculate screen width from aspect ratio (same as centered calculation)
         let screen_aspect = aspect_ratio.as_f32();
-        let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
+        let screen_width_uv = screen_height_uv * screen_aspect;
 
         // Calculate screen corners based on tag placement (top-left)
         let tag_tl = tag_corners[0];
