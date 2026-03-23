@@ -414,25 +414,28 @@ impl AprilTagAutoDetector {
     ///
     /// The tag content is 16:9 (stretched from square to fill 16:9 frame).
     /// The screen's physical aspect ratio distorts this 16:9 content:
-    ///   - 4:3  screen: 16:9 content squashed horizontally → ratio ≈ 0.75
-    ///   - 16:9 screen: 16:9 content fits perfectly      → ratio ≈ 1.0
-    ///   - 21:9 screen: 16:9 content stretched horizontally → ratio ≈ 1.31
+    ///   - 4:3  screen (0.75): tag appears TALL      → ratio ~0.65-0.85
+    ///   - 16:9 screen (1.0):  tag appears SQUARE    → ratio ~0.85-1.20
+    ///   - 21:9 screen (1.31): tag appears WIDE      → ratio ~1.20+
     ///
-    /// Note: This function receives the *normalized* ratio where rotation has already
-    /// been accounted for (swapped back if the screen was rotated 90°/270°).
-    ///
-    /// Thresholds are midpoints between adjacent expected values (±15% perspective slack).
+    /// Note: Real-world measurements vary due to camera angle, perspective, etc.
+    /// Using wider thresholds with generous overlap zones.
     fn detect_aspect_ratio_from_tag_aspect(&self, normalized_aspect: f32) -> AspectRatio {
         log::info!("Screen native aspect ratio detection: {:.3}", normalized_aspect);
 
-        if normalized_aspect < 0.875 {
-            log::info!("  -> Detected as 4:3 (ratio {:.3} < 0.875)", normalized_aspect);
+        // Wider thresholds to account for real-world measurement variance
+        // 4:3 screens have ratios < 0.85 (tag appears noticeably tall)
+        // 16:9 screens have ratios 0.85-1.20 (tag appears roughly square)
+        // 21:9 screens have ratios > 1.20 (tag appears noticeably wide)
+        
+        if normalized_aspect < 0.85 {
+            log::info!("  -> Detected as 4:3 (ratio {:.3} < 0.85)", normalized_aspect);
             AspectRatio::Ratio4_3
-        } else if normalized_aspect < 1.156 {
-            log::info!("  -> Detected as 16:9 (ratio {:.3} in [0.875, 1.156))", normalized_aspect);
+        } else if normalized_aspect < 1.20 {
+            log::info!("  -> Detected as 16:9 (ratio {:.3} in [0.85, 1.20))", normalized_aspect);
             AspectRatio::Ratio16_9
         } else {
-            log::info!("  -> Detected as 21:9 (ratio {:.3} >= 1.156)", normalized_aspect);
+            log::info!("  -> Detected as 21:9 (ratio {:.3} >= 1.20)", normalized_aspect);
             AspectRatio::Ratio21_9
         }
     }
