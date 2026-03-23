@@ -81,6 +81,9 @@ pub struct AutoDetectConfig {
     /// bounding box fills the input frame edge-to-edge.  Relative positions
     /// and per-screen aspect ratios are preserved.  Maximises sampled pixels.
     pub fit_to_frame: bool,
+    /// Scale factor for detected screen dimensions (1.0 = exact fit, 1.2 = 20% larger).
+    /// Applied from screen center to sample a larger area.
+    pub screen_scale: f32,
 }
 
 impl Default for AutoDetectConfig {
@@ -88,13 +91,14 @@ impl Default for AutoDetectConfig {
         Self {
             expected_screens: 2,
             tag_family: AprilTagFamily::Tag36h11,
-            tag_size_ratio: 0.60,
+            tag_size_ratio: 1.0, // Marker fills 100% of screen height
             default_aspect_ratio: AspectRatio::Ratio16_9,
             region_padding: 0.0,
             min_confidence: 10.0,
             tag_placement: TagPlacement::Centered,
             input_aspect: 16.0 / 9.0,
             fit_to_frame: true,
+            screen_scale: 1.25, // Sample 25% larger area from center
         }
     }
 }
@@ -563,8 +567,12 @@ impl AprilTagAutoDetector {
         let screen_aspect = aspect_ratio.as_f32();
         let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
 
-        let half_width  = screen_width_uv  / 2.0;
-        let half_height = screen_height_uv / 2.0;
+        // Apply screen scale factor to sample larger area from center
+        let scaled_width = screen_width_uv * self.config.screen_scale;
+        let scaled_height = screen_height_uv * self.config.screen_scale;
+
+        let half_width  = scaled_width  / 2.0;
+        let half_height = scaled_height / 2.0;
 
         let screen_corners = [
             Vec2::new(tag_center.x - half_width, tag_center.y - half_height), // TL
@@ -573,10 +581,10 @@ impl AprilTagAutoDetector {
             Vec2::new(tag_center.x - half_width, tag_center.y + half_height), // BL
         ];
 
-        log::info!("Screen calc: aspect={:?}, input_aspect={:.3}, height_uv={:.3}, width_uv={:.3}",
-            aspect_ratio.name(), img_aspect, screen_height_uv, screen_width_uv);
+        log::info!("Screen calc: aspect={:?}, input_aspect={:.3}, height_uv={:.3}, width_uv={:.3}, scale={:.2}",
+            aspect_ratio.name(), img_aspect, scaled_height, scaled_width, self.config.screen_scale);
 
-        (screen_width_uv, screen_height_uv, screen_corners)
+        (scaled_width, scaled_height, screen_corners)
     }
     
     /// Calculate corner-placed screen dimensions from the detected tag.
@@ -601,6 +609,10 @@ impl AprilTagAutoDetector {
         let screen_aspect = aspect_ratio.as_f32();
         let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
 
+        // Apply screen scale factor to sample larger area
+        let scaled_width = screen_width_uv * self.config.screen_scale;
+        let scaled_height = screen_height_uv * self.config.screen_scale;
+
         // Calculate screen corners based on tag placement (top-left)
         let tag_tl = tag_corners[0];
         let tag_tr = tag_corners[1];
@@ -622,19 +634,25 @@ impl AprilTagAutoDetector {
             Vec2::new(0.0, 1.0)
         };
 
-        let screen_tl = tag_tl;
-        let screen_tr = tag_tl + top_dir * screen_width_uv;
-        let screen_bl = tag_tl + left_dir * screen_height_uv;
-        let screen_br = screen_bl + top_dir * screen_width_uv;
+        // For corner placement: expand outward from the corner to sample larger area
+        // The tag is at the corner, so we extend further in both directions
+        let extra_width = (scaled_width - screen_width_uv) / 2.0;
+        let extra_height = (scaled_height - screen_height_uv) / 2.0;
+        
+        // Move corner opposite to expansion direction
+        let screen_tl = tag_tl - top_dir * extra_width - left_dir * extra_height;
+        let screen_tr = screen_tl + top_dir * scaled_width;
+        let screen_bl = screen_tl + left_dir * scaled_height;
+        let screen_br = screen_bl + top_dir * scaled_width;
 
         let screen_corners = [screen_tl, screen_tr, screen_br, screen_bl];
 
         // Apply orientation swap if needed
         match orientation {
             Orientation::Rotated90 | Orientation::Rotated270 => {
-                (screen_height_uv, screen_width_uv, screen_corners)
+                (scaled_height, scaled_width, screen_corners)
             }
-            _ => (screen_width_uv, screen_height_uv, screen_corners),
+            _ => (scaled_width, scaled_height, screen_corners),
         }
     }
     
@@ -1045,7 +1063,8 @@ mod tests {
     fn test_auto_detect_config_default() {
         let config = AutoDetectConfig::default();
         assert_eq!(config.expected_screens, 2);
-        assert_eq!(config.tag_size_ratio, 0.60);
+        assert_eq!(config.tag_size_ratio, 1.0);
+        assert_eq!(config.screen_scale, 1.25);
         assert!(matches!(config.default_aspect_ratio, AspectRatio::Ratio16_9));
         assert!(matches!(config.tag_placement, TagPlacement::Centered));
     }

@@ -132,7 +132,7 @@ impl ControlGui {
             matrix_input_source: 0,  // Input 1
             // AprilTag auto-detection defaults
             matrix_apriltag_expected_screens: 2,
-            matrix_apriltag_marker_size: 0.60, // 60% for good detection resolution
+            matrix_apriltag_marker_size: 1.0, // 100% for maximum detection resolution
             matrix_apriltag_output_col: 0,
             matrix_apriltag_output_row: 0,
             matrix_apriltag_showing_pattern: false,
