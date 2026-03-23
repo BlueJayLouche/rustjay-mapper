@@ -509,11 +509,16 @@ impl AprilTagAutoDetector {
             (left_height + right_height) / 2.0
         };
 
-        // fiducial = 0.8 × marker,  marker = tag_size_ratio × screen_height
-        // → screen_height_uv = fiducial_size_uv / (0.8 × tag_size_ratio)
+        // AprilTag detector finds internal fiducial corners (~80% of marker).
+        // Marker has white border, so fiducial is smaller than the displayed marker.
+        // 
+        // Calculated screen sizes were ~20% too small, so expand by 1/0.8 = 1.25
         let marker_to_fiducial_ratio = 0.8_f32;
+        let expansion_factor = 1.0 / marker_to_fiducial_ratio; // 1.25x
+        
+        // screen_height = fiducial / (marker_ratio × tag_size_ratio) × expansion
         let actual_fill = self.config.tag_size_ratio * marker_to_fiducial_ratio;
-        let screen_height_uv = fiducial_size_uv / actual_fill.clamp(0.1, 1.0);
+        let screen_height_uv = (fiducial_size_uv / actual_fill.clamp(0.1, 1.0)) * expansion_factor;
 
         // Derive screen width from the known screen aspect.
         // The screen's physical aspect ratio determines its shape in UV space.
