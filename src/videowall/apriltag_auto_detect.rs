@@ -368,15 +368,24 @@ impl AprilTagAutoDetector {
         // space, and the input texture is typically 16:9 regardless of what camera took
         // the detection photo.
         let input_aspect = self.config.input_aspect;
+        
+        // CRITICAL: For rotated screens (90°/270°), we need unadjusted dimensions
+        // so that swapping width/height gives the correct portrait shape.
+        // For natural orientation screens, use the standard calculation.
+        let calc_input_aspect = match orientation {
+            Orientation::Rotated90 | Orientation::Rotated270 => 1.0, // Don't adjust for rotated
+            _ => input_aspect, // Standard calculation for natural orientation
+        };
+        
         let (screen_width, screen_height, screen_corners) = match self.config.tag_placement {
             TagPlacement::Centered => {
-                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, input_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, calc_input_aspect)
             }
             TagPlacement::TopLeft => {
-                self.calculate_corner_screen_with_aspect(&corners, center, orientation, detected_aspect, input_aspect)
+                self.calculate_corner_screen_with_aspect(&corners, center, orientation, detected_aspect, calc_input_aspect)
             }
             _ => {
-                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, input_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, calc_input_aspect)
             }
         };
         
@@ -508,16 +517,10 @@ impl AprilTagAutoDetector {
         // which for a 16:9 screen is roughly square in the photo. So the
         // screen_height_UV is already "wrong" for a 16:9 screen.
         //
-        // Derive screen width from the detected screen aspect ratio.
-        // 
-        // The screen's physical aspect ratio determines its shape in UV space.
-        // - 16:9 screen: width = height * 1.778
-        // - 4:3 screen: width = height * 0.75
-        //
-        // NOTE: Previous code divided by img_aspect here, which incorrectly
-        // made 16:9 screens appear square when img_aspect was also 16:9.
+        // Derive screen width from the known screen aspect and the input texture aspect.
+        // In UV space:  screen_w_UV / screen_h_UV = screen_aspect / input_aspect
         let screen_aspect = aspect_ratio.as_f32();
-        let screen_width_uv = screen_height_uv * screen_aspect;
+        let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
 
         let half_width  = screen_width_uv  / 2.0;
         let half_height = screen_height_uv / 2.0;
