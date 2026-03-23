@@ -329,7 +329,9 @@ impl AprilTagAutoDetector {
         // 3. "Un-rotate" if needed to get the screen's native aspect ratio
         // 4. Classify based on the normalized (unrotated) ratio
         
-        let tag_aspect_uv = self.calculate_tag_aspect_ratio(&corners);
+        // Calculate aspect ratio from pixel coordinates (NOT UV coordinates)
+        // UV normalization distorts aspect ratio because x/width != y/height for non-square images
+        let tag_aspect_pixel = self.calculate_tag_aspect_ratio_pixels(&detection.corners);
         
         // Aspect ratio detection accounting for screen rotation.
         //
@@ -350,23 +352,15 @@ impl AprilTagAutoDetector {
         let is_rotated = matches!(orientation, Orientation::Rotated90 | Orientation::Rotated270);
         let normalized_aspect = if is_rotated {
             // Invert to "un-rotate" the measurement
-            1.0 / tag_aspect_uv
+            1.0 / tag_aspect_pixel
         } else {
-            tag_aspect_uv
+            tag_aspect_pixel
         };
         
         let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(normalized_aspect);
         
-        // Debug logging
-        let tag_width_pixels = (detection.corners[1][0] - detection.corners[0][0]).abs();
-        let tag_height_pixels = (detection.corners[3][1] - detection.corners[0][1]).abs();
-        let raw_pixel_ratio = if tag_height_pixels > 0.0 { 
-            tag_width_pixels / tag_height_pixels 
-        } else { 
-            1.0 
-        };
-        log::info!("Tag {}: raw={:.3}, uv={:.3}, normalized={:.3}, rotated={}, -> {:?}",
-            detection.id, raw_pixel_ratio, tag_aspect_uv, normalized_aspect, is_rotated, detected_aspect.name());
+        log::info!("Tag {}: pixel_ratio={:.3}, norm_ratio={:.3}, rotated={}, -> {:?}",
+            detection.id, tag_aspect_pixel, normalized_aspect, is_rotated, detected_aspect.name());
         
         // Calculate screen dimensions and corners based on placement.
         // NOTE: pass self.config.input_aspect (live input texture aspect) NOT img_aspect
@@ -393,9 +387,16 @@ impl AprilTagAutoDetector {
         let expected_ratio = detected_aspect.as_f32();
         
         let marker_to_fiducial = 0.8;
+        // Calculate fiducial height in pixels for logging
+        let left_edge_height = ((detection.corners[3][1] - detection.corners[0][1]).powi(2) + 
+                                (detection.corners[3][0] - detection.corners[0][0]).powi(2)).sqrt();
+        let right_edge_height = ((detection.corners[2][1] - detection.corners[1][1]).powi(2) + 
+                                 (detection.corners[2][0] - detection.corners[1][0]).powi(2)).sqrt();
+        let fiducial_height_pixels = (left_edge_height + right_edge_height) / 2.0;
+        
         log::info!("Screen {}: aspect={:?}, size={:.0}x{:.0}px (fiducial={:.0}px, slider={:.0}%, actual_fill={:.1}%)",
             detection.id, detected_aspect.name(), pixel_width, pixel_height, 
-            tag_height_pixels, self.config.tag_size_ratio * 100.0, 
+            fiducial_height_pixels, self.config.tag_size_ratio * 100.0, 
             self.config.tag_size_ratio * marker_to_fiducial * 100.0);
 
         DetectedScreen {
@@ -549,7 +550,7 @@ impl AprilTagAutoDetector {
         }
     }
     
-    /// Calculate tag aspect ratio from detected corners
+    /// Calculate tag aspect ratio from detected corners (UV space)
     /// Returns width/height ratio (1.0 = square, <1 = squeezed horizontally, >1 = stretched horizontally)
     fn calculate_tag_aspect_ratio(&self, corners: &[Vec2; 4]) -> f32 {
         // Calculate tag width (average of top and bottom edges)
@@ -560,6 +561,36 @@ impl AprilTagAutoDetector {
         // Calculate tag height (average of left and right edges)
         let left_height = (corners[3] - corners[0]).length();
         let right_height = (corners[2] - corners[1]).length();
+        let tag_height = (left_height + right_height) / 2.0;
+        
+        if tag_height > 0.0 {
+            tag_width / tag_height
+        } else {
+            1.0 // Assume square if can't calculate
+        }
+    }
+    
+    /// Calculate tag aspect ratio from raw pixel corners
+    /// CRITICAL: Use this instead of UV-space calculation for aspect ratio detection
+    /// because UV normalization distorts aspect ratio (x/width != y/height for non-square images)
+    fn calculate_tag_aspect_ratio_pixels(&self, corners: &[[f32; 2]; 4]) -> f32 {
+        // Convert to Vec2 for easier math
+        let corners_vec: [Vec2; 4] = [
+            Vec2::new(corners[0][0], corners[0][1]),
+            Vec2::new(corners[1][0], corners[1][1]),
+            Vec2::new(corners[2][0], corners[2][1]),
+            Vec2::new(corners[3][0], corners[3][1]),
+        ];
+        
+        // Calculate tag width (average of top and bottom edges)
+        // AprilTag order: [0]=LB, [1]=RB, [2]=RT, [3]=LT
+        let bottom_width = (corners_vec[1] - corners_vec[0]).length();
+        let top_width = (corners_vec[2] - corners_vec[3]).length();
+        let tag_width = (top_width + bottom_width) / 2.0;
+        
+        // Calculate tag height (average of left and right edges)
+        let left_height = (corners_vec[3] - corners_vec[0]).length();
+        let right_height = (corners_vec[2] - corners_vec[1]).length();
         let tag_height = (left_height + right_height) / 2.0;
         
         if tag_height > 0.0 {
