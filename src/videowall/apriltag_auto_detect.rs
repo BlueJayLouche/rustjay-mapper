@@ -320,13 +320,26 @@ impl AprilTagAutoDetector {
         // reflects how the screen hardware has distorted the (square) tag content.
         let tag_aspect_uv = self.calculate_tag_aspect_ratio(&corners);
         let tag_pixel_ratio = tag_aspect_uv * img_aspect;
-        let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(tag_pixel_ratio);
+        
+        // CRITICAL: Normalize pixel ratio based on orientation.
+        // When a screen is rotated 90° or 270°, the tag's width/height in camera
+        // coordinates are swapped. We need to "un-rotate" to get the true aspect.
+        let normalized_pixel_ratio = match orientation {
+            Orientation::Rotated90 | Orientation::Rotated270 => {
+                // Width and height are swapped, invert the ratio
+                1.0 / tag_pixel_ratio
+            }
+            _ => tag_pixel_ratio, // Normal or 180° - no swap needed
+        };
+        
+        let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(normalized_pixel_ratio);
         
         // Debug: log raw tag dimensions in pixels
         let tag_width_pixels = (detection.corners[1][0] - detection.corners[0][0]).abs();
         let tag_height_pixels = (detection.corners[3][1] - detection.corners[0][1]).abs();
-        log::info!("Tag {} raw pixels: width={:.1}, height={:.1}, aspect={:.3}, orientation={:?}",
-            detection.id, tag_width_pixels, tag_height_pixels, tag_width_pixels/tag_height_pixels, orientation);
+        log::info!("Tag {} raw pixels: width={:.1}, height={:.1}, aspect={:.3}, norm_aspect={:.3}, orientation={:?}",
+            detection.id, tag_width_pixels, tag_height_pixels, 
+            tag_width_pixels/tag_height_pixels, normalized_pixel_ratio, orientation);
         
         // Calculate screen dimensions and corners based on placement.
         // NOTE: pass self.config.input_aspect (live input texture aspect) NOT img_aspect
