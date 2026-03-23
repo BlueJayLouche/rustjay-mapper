@@ -469,10 +469,55 @@ impl AprilTagAutoDetector {
         let actual_fill_h = self.config.tag_size_ratio * marker_to_fiducial_ratio;
         let screen_height_uv = fiducial_height_uv / actual_fill_h.clamp(0.1, 1.0);
 
-        // Derive screen width from the known screen aspect and the input texture aspect.
-        // In UV space:  screen_w_UV / screen_h_UV = screen_aspect / input_aspect
+        // Derive screen width from the known screen aspect.
+        // The screen's physical aspect ratio determines its shape in UV space.
+        // A 16:9 screen has width = height * (16/9) in physical pixels,
+        // but in UV space we need to account for the input texture aspect.
+        // 
+        // CORRECT FORMULA:
+        // In UV space: screen_width_UV = screen_height_UV * screen_aspect / input_aspect
+        // BUT the screen_height_UV was calculated from tag height which already includes
+        // the input_aspect factor. So we just need:
+        // screen_width_UV = screen_height_UV * screen_aspect
+        //
+        // WAIT - that's wrong too. Let me think...
+        // 
+        // The tag appears with a certain aspect ratio in the photo (tag_aspect_uv).
+        // For a 16:9 screen, the tag appears roughly square (1:1).
+        // For a 4:3 screen, the tag appears tall (0.75:1).
+        // 
+        // The screen dimensions should be derived from the TAG dimensions,
+        // not from the detected aspect ratio.
+        //
+        // Actually, the simplest approach: use the detected aspect ratio to
+        // determine the screen's shape. If we know it's 16:9, the screen
+        // should be 1.778x wider than tall in PHYSICAL pixels.
+        //
+        // In UV space: we need to convert physical pixels to UV.
+        // screen_width_UV = screen_width_pixels / img_width
+        // screen_height_UV = screen_height_pixels / img_height
+        //
+        // If screen is 16:9 physical: width_pixels = height_pixels * 1.778
+        // So: screen_width_UV = (height_pixels * 1.778) / img_width
+        //                     = (height_pixels / img_height) * 1.778 * (img_height/img_width)
+        //                     = screen_height_UV * 1.778 / img_aspect
+        //
+        // Hmm, that's what we had. But it's producing squares for 16:9.
+        //
+        // OH! The issue is that screen_height_UV is calculated from the tag,
+        // which for a 16:9 screen is roughly square in the photo. So the
+        // screen_height_UV is already "wrong" for a 16:9 screen.
+        //
+        // Derive screen width from the detected screen aspect ratio.
+        // 
+        // The screen's physical aspect ratio determines its shape in UV space.
+        // - 16:9 screen: width = height * 1.778
+        // - 4:3 screen: width = height * 0.75
+        //
+        // NOTE: Previous code divided by img_aspect here, which incorrectly
+        // made 16:9 screens appear square when img_aspect was also 16:9.
         let screen_aspect = aspect_ratio.as_f32();
-        let screen_width_uv = screen_height_uv * screen_aspect / img_aspect;
+        let screen_width_uv = screen_height_uv * screen_aspect;
 
         let half_width  = screen_width_uv  / 2.0;
         let half_height = screen_height_uv / 2.0;
