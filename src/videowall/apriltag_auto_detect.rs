@@ -623,56 +623,55 @@ impl AprilTagAutoDetector {
 
     /// Create video matrix config from detected screens
     ///
-    /// Maps detected screens to specific output cells in a FIXED 3x3 output grid.
-    /// Screens are mapped consecutively starting from the specified output position.
-    /// Remaining cells in the 3x3 grid are left empty (will show black).
+    /// Maps detected screens to specific output cells based on screen_id (AprilTag ID).
+    /// Output position is calculated as: col = screen_id % output_cols, row = screen_id / output_cols
+    /// Example for 3x3 grid: Screen ID 4 → (1, 1), Screen ID 7 → (1, 2)
+    /// Remaining cells are left empty (will show black).
     ///
     /// # Arguments
     /// * `screens` - Detected screens from detect_screens()
     /// * `input_resolution` - (width, height) of input texture
-    /// * `output_start_pos` - Optional (col, row) to start mapping screens to (default: 0,0)
+    /// * `output_grid` - Output grid size (columns, rows)
     ///
     /// # Returns
-    /// Configured VideoMatrixConfig with 3x3 output grid
+    /// Configured VideoMatrixConfig with specified output grid
     pub fn create_matrix_config(
         &self,
         screens: &[DetectedScreen],
         _input_resolution: (u32, u32),
-        output_start_pos: Option<(u32, u32)>,
+        output_grid: GridSize,
     ) -> anyhow::Result<VideoMatrixConfig> {
         if screens.is_empty() {
             anyhow::bail!("No screens detected");
         }
 
-        // FIXED: Always use 3x3 output grid regardless of detected screen count
         let input_grid_size = GridSize::new(screens.len() as u32, 1);
-        let output_grid_size = GridSize::new(3, 3); // Always 3x3!
+        let max_screen_id = output_grid.columns * output_grid.rows;
         
         // Create input grid config
         let mut input_grid = InputGridConfig::new(input_grid_size);
 
-        // Get starting output position (default to 0,0)
-        let (start_col, start_row) = output_start_pos.unwrap_or((0, 0));
-        let start_col = start_col.min(2) as f32; // Clamp to valid 3x3 range
-        let start_row = start_row.min(2) as f32;
-
-        // Create mapping for each detected screen
-        // Map Screen 0 → output (start_col, start_row), Screen 1 → next cell, etc.
+        // Create mapping for each detected screen based on its screen_id (AprilTag ID)
         for (idx, screen) in screens.iter().enumerate() {
-            let input_cell = idx;
-            
-            // Calculate output position with wrapping within 3x3 grid
-            let offset = idx as f32;
-            let output_col = (start_col + offset) % 3.0;
-            let output_row = start_row + ((start_col + offset) / 3.0).floor();
+            let screen_id = screen.screen_id;
+            let output_col = (screen_id % output_grid.columns) as f32;
+            let output_row = (screen_id / output_grid.columns) as f32;
             
             // Ensure we don't go out of bounds
-            if output_row >= 3.0 {
-                log::warn!("Screen {} cannot be mapped - exceeds 3x3 output grid bounds", idx);
+            if screen_id >= max_screen_id {
+                log::warn!(
+                    "Screen ID {} exceeds output grid bounds (max {} for {}x{} grid), skipping",
+                    screen_id, max_screen_id - 1, output_grid.columns, output_grid.rows
+                );
                 continue;
             }
             
             let output_position = GridPosition::new(output_col, output_row, 1.0, 1.0);
+
+            log::info!(
+                "Mapping detected screen {} (ID {}) → output position ({}, {})",
+                idx, screen_id, output_col, output_row
+            );
 
             // Create source rect from detected screen corners (normalized UV coordinates)
             let source_rect = super::Rect::new(
@@ -682,10 +681,10 @@ impl AprilTagAutoDetector {
                 screen.height,       // Height
             );
 
-            let mapping = GridCellMapping::new(input_cell, output_position)
+            let mapping = GridCellMapping::new(idx, output_position)
                 .with_aspect_ratio(screen.aspect_ratio)
                 .with_orientation(screen.orientation)
-                .with_display_id(screen.screen_id)
+                .with_display_id(screen_id)
                 .with_source_rect(source_rect);
 
             input_grid.add_mapping(mapping);
@@ -693,24 +692,21 @@ impl AprilTagAutoDetector {
 
         Ok(VideoMatrixConfig {
             input_grid,
-            output_grid: output_grid_size, // Fixed 3x3
+            output_grid,
             background_color: [0.0, 0.0, 0.0, 1.0],
             auto_detect: true,
             detected_screens: Vec::new(),
         })
     }
 
-    /// Create video matrix config with specific output position (convenience method)
-    ///
-    /// This is a wrapper around `create_matrix_config` for backwards compatibility.
-    pub fn create_matrix_config_with_position(
+    /// Create video matrix config with specific output grid (convenience method)
+    pub fn create_matrix_config_with_grid(
         &self,
         screens: &[DetectedScreen],
         input_resolution: (u32, u32),
-        start_col: u32,
-        start_row: u32,
+        output_grid: GridSize,
     ) -> anyhow::Result<VideoMatrixConfig> {
-        self.create_matrix_config(screens, input_resolution, Some((start_col, start_row)))
+        self.create_matrix_config(screens, input_resolution, output_grid)
     }
 
     /// Create a simple 2-screen side-by-side configuration
@@ -748,6 +744,8 @@ impl AprilTagAutoDetector {
 
     /// Quick detect and configure in one step
     ///
+    /// Uses default 3x3 output grid. Use `create_matrix_config` directly for custom grid sizes.
+    ///
     /// # Arguments
     /// * `image` - Input grayscale image
     /// * `image_size` - (width, height) of input image
@@ -768,7 +766,8 @@ impl AprilTagAutoDetector {
             );
         }
 
-        self.create_matrix_config(&screens, input_resolution, None)
+        // Default to 3x3 grid for convenience
+        self.create_matrix_config(&screens, input_resolution, GridSize::new(3, 3))
     }
 
     /// Get current config

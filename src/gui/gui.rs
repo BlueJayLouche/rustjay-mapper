@@ -1150,14 +1150,11 @@ impl ControlGui {
         ui.text_disabled(format!("Tag fills {:.0}% of screen (better detection with larger tags)", 
             self.matrix_apriltag_marker_size * 100.0));
         
-        // Output position for detected screens (when not all detected)
-        ui.text("Output Position for Detected Screens:");
-        ui.input_int("Start Column", &mut self.matrix_apriltag_output_col).build();
-        ui.input_int("Start Row", &mut self.matrix_apriltag_output_row).build();
-        self.matrix_apriltag_output_col = self.matrix_apriltag_output_col.clamp(0, self.matrix_output_grid_cols - 1);
-        self.matrix_apriltag_output_row = self.matrix_apriltag_output_row.clamp(0, self.matrix_output_grid_rows - 1);
-        ui.text_disabled(format!("Detected screens will map to ({},{}) and right", 
-            self.matrix_apriltag_output_col, self.matrix_apriltag_output_row));
+        // Output position is determined by AprilTag ID (screen_id)
+        ui.text_disabled("Output position determined by AprilTag ID:");
+        ui.text_disabled(format!("Screen ID → output (col=ID%{}, row=ID/{}) based on {}x{} grid", 
+            self.matrix_output_grid_cols, self.matrix_output_grid_cols,
+            self.matrix_output_grid_cols, self.matrix_output_grid_rows));
         
         ui.spacing();
         
@@ -1749,10 +1746,12 @@ impl ControlGui {
                     );
                 }
                 
-                // Create configuration with user-specified output position
-                let start_col = self.matrix_apriltag_output_col as u32;
-                let start_row = self.matrix_apriltag_output_row as u32;
-                match detector.create_matrix_config_with_position(&screens, (width, height), start_col, start_row) {
+                // Create configuration (output position determined by AprilTag ID)
+                let output_grid = GridSize::new(
+                    self.matrix_output_grid_cols as u32,
+                    self.matrix_output_grid_rows as u32,
+                );
+                match detector.create_matrix_config(&screens, (width, height), output_grid) {
                     Ok(mut config) => {
                         // Convert detected screens to regions for visualization
                         let detected_regions: Vec<DetectedScreenRegion> = screens.iter().map(|s| {
@@ -1773,16 +1772,10 @@ impl ControlGui {
                         }).collect();
                         config.detected_screens = detected_regions;
                         
-                        // Preserve user's configured output grid size (from GUI settings)
-                        config.output_grid = GridSize::new(
-                            self.matrix_output_grid_cols as u32,
-                            self.matrix_output_grid_rows as u32,
-                        );
-                        
                         let mut state = self.shared_state.lock().unwrap();
                         state.video_matrix_config = config;
-                        log::info!("Applied auto-detected matrix configuration with {} screens at output ({},{}), grid: {}x{}", 
-                            screens.len(), start_col, start_row, self.matrix_output_grid_cols, self.matrix_output_grid_rows);
+                        log::info!("Applied auto-detected matrix configuration with {} screens, grid: {}x{} (positions determined by AprilTag ID)", 
+                            screens.len(), self.matrix_output_grid_cols, self.matrix_output_grid_rows);
                     }
                     Err(e) => {
                         log::error!("Failed to create matrix config: {}", e);
