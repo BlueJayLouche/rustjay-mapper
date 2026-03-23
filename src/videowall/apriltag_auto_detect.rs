@@ -392,15 +392,17 @@ impl AprilTagAutoDetector {
             _ => detected_aspect,
         };
         
+        let is_rotated = matches!(orientation, Orientation::Rotated90 | Orientation::Rotated270);
+        
         let (screen_width, screen_height, screen_corners) = match self.config.tag_placement {
             TagPlacement::Centered => {
-                self.calculate_centered_screen_with_aspect(&corners, center, calc_aspect_ratio, calc_input_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, calc_aspect_ratio, calc_input_aspect, is_rotated)
             }
             TagPlacement::TopLeft => {
                 self.calculate_corner_screen_with_aspect(&corners, center, orientation, calc_aspect_ratio, calc_input_aspect)
             }
             _ => {
-                self.calculate_centered_screen_with_aspect(&corners, center, calc_aspect_ratio, calc_input_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, calc_aspect_ratio, calc_input_aspect, is_rotated)
             }
         };
         
@@ -479,19 +481,39 @@ impl AprilTagAutoDetector {
         tag_center: Vec2,
         aspect_ratio: AspectRatio,
         img_aspect: f32, // = input_aspect from config
+        is_rotated: bool, // true for 90°/270° screens - measure horizontal instead of vertical
     ) -> (f32, f32, [Vec2; 4]) {
         // Corners: [TL, TR, BR, BL]
-        // Measure the fiducial's VERTICAL extent (left and right edges).
-        // tag_size_ratio = marker_height / screen_height  →  use height to recover height.
-        let left_height  = (tag_corners[3] - tag_corners[0]).length(); // |BL - TL|
-        let right_height = (tag_corners[2] - tag_corners[1]).length(); // |BR - TR|
-        let fiducial_height_uv = (left_height + right_height) / 2.0;
+        // 
+        // CRITICAL: For rotated screens, measure HORIZONTAL extent (top/bottom edges).
+        // In the camera image, a rotated portrait screen's tag has its WIDTH in the
+        // image's horizontal direction - but this corresponds to the SCREEN's height!
+        //
+        // Example: 16:9 screen rotated 90° becomes 9:16 portrait.
+        // - Tag on screen: square, fills full width (9), 56% of height (16)
+        // - In camera image: tag appears as rectangle, wider than tall
+        // - The tag's WIDTH in image = screen's HEIGHT in portrait
+        //
+        // For normal (landscape) screens: measure vertical edges → screen height
+        // For rotated (portrait) screens: measure horizontal edges → screen height
+        
+        let fiducial_size_uv = if is_rotated {
+            // Measure horizontal extent (top and bottom edges) for rotated screens
+            let top_width = (tag_corners[1] - tag_corners[0]).length();    // |TR - TL|
+            let bottom_width = (tag_corners[2] - tag_corners[3]).length(); // |BR - BL|
+            (top_width + bottom_width) / 2.0
+        } else {
+            // Measure vertical extent (left and right edges) for normal screens
+            let left_height  = (tag_corners[3] - tag_corners[0]).length(); // |BL - TL|
+            let right_height = (tag_corners[2] - tag_corners[1]).length(); // |BR - TR|
+            (left_height + right_height) / 2.0
+        };
 
         // fiducial = 0.8 × marker,  marker = tag_size_ratio × screen_height
-        // → screen_height_uv = fiducial_height_uv / (0.8 × tag_size_ratio)
+        // → screen_height_uv = fiducial_size_uv / (0.8 × tag_size_ratio)
         let marker_to_fiducial_ratio = 0.8_f32;
-        let actual_fill_h = self.config.tag_size_ratio * marker_to_fiducial_ratio;
-        let screen_height_uv = fiducial_height_uv / actual_fill_h.clamp(0.1, 1.0);
+        let actual_fill = self.config.tag_size_ratio * marker_to_fiducial_ratio;
+        let screen_height_uv = fiducial_size_uv / actual_fill.clamp(0.1, 1.0);
 
         // Derive screen width from the known screen aspect.
         // The screen's physical aspect ratio determines its shape in UV space.
