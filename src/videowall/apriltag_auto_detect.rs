@@ -313,33 +313,60 @@ impl AprilTagAutoDetector {
         // Image aspect ratio (width/height in pixels)
         let img_aspect = img_width / img_height;
 
-        // Detect aspect ratio from tag distortion FIRST.
-        // calculate_tag_aspect_ratio returns a UV-normalised ratio (width_uv/height_uv).
-        // Converting to a pixel ratio (multiply by img_aspect = W/H) gives the true
-        // width-to-height pixel ratio of the tag as seen in the camera, which directly
-        // reflects how the screen hardware has distorted the (square) tag content.
-        let tag_aspect_uv = self.calculate_tag_aspect_ratio(&corners);
-        let tag_pixel_ratio = tag_aspect_uv * img_aspect;
+        // Detect aspect ratio from tag distortion.
+        // 
+        // The tag on screen has been stretched from square to 16:9 (content aspect).
+        // Then the screen's physical aspect ratio further distorts it:
+        //   - 16:9 screen: no extra distortion (tag remains 16:9)
+        //   - 4:3 screen: 16:9 content squashed horizontally → tag appears 4:3
+        //   - 21:9 screen: 16:9 content stretched horizontally → tag appears 21:9
+        //
+        // If the screen is rotated 90°/270°, these distortions are rotated too.
+        //
+        // APPROACH:
+        // 1. Detect orientation first (from tag rotation)
+        // 2. Calculate the tag's apparent aspect ratio in UV space
+        // 3. "Un-rotate" if needed to get the screen's native aspect ratio
+        // 4. Classify based on the normalized (unrotated) ratio
         
-        // CRITICAL: Normalize pixel ratio based on orientation.
-        // When a screen is rotated 90° or 270°, the tag's width/height in camera
-        // coordinates are swapped. We need to "un-rotate" to get the true aspect.
-        let normalized_pixel_ratio = match orientation {
-            Orientation::Rotated90 | Orientation::Rotated270 => {
-                // Width and height are swapped, invert the ratio
-                1.0 / tag_pixel_ratio
-            }
-            _ => tag_pixel_ratio, // Normal or 180° - no swap needed
+        let tag_aspect_uv = self.calculate_tag_aspect_ratio(&corners);
+        
+        // Aspect ratio detection accounting for screen rotation.
+        //
+        // The tag is SQUARE on the physical display (fills height of 16:9 cell).
+        // Screen aspect ratio distorts the 16:9 content, which distorts the tag:
+        //   - 4:3 screen:  16:9 content squashed HORIZONTALLY → tag appears TALL (ratio ~0.75)
+        //   - 16:9 screen: 16:9 content fits perfectly      → tag appears SQUARE (ratio ~1.0)
+        //   - 21:9 screen: 16:9 content stretched HORIZONTALLY → tag appears WIDE (ratio ~1.31)
+        //
+        // When the SCREEN is rotated 90°/270°:
+        //   - The tag rotates too
+        //   - A TALL tag (4:3 screen) becomes WIDE in camera view
+        //   - A WIDE tag (21:9 screen) becomes TALL in camera view
+        //   - A SQUARE tag (16:9 screen) stays SQUARE
+        //
+        // So for rotated screens, we INVERT the ratio to get the true aspect.
+        
+        let is_rotated = matches!(orientation, Orientation::Rotated90 | Orientation::Rotated270);
+        let normalized_aspect = if is_rotated {
+            // Invert to "un-rotate" the measurement
+            1.0 / tag_aspect_uv
+        } else {
+            tag_aspect_uv
         };
         
-        let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(normalized_pixel_ratio);
+        let detected_aspect = self.detect_aspect_ratio_from_tag_aspect(normalized_aspect);
         
-        // Debug: log raw tag dimensions in pixels
+        // Debug logging
         let tag_width_pixels = (detection.corners[1][0] - detection.corners[0][0]).abs();
         let tag_height_pixels = (detection.corners[3][1] - detection.corners[0][1]).abs();
-        log::info!("Tag {} raw pixels: width={:.1}, height={:.1}, aspect={:.3}, norm_aspect={:.3}, orientation={:?}",
-            detection.id, tag_width_pixels, tag_height_pixels, 
-            tag_width_pixels/tag_height_pixels, normalized_pixel_ratio, orientation);
+        let raw_pixel_ratio = if tag_height_pixels > 0.0 { 
+            tag_width_pixels / tag_height_pixels 
+        } else { 
+            1.0 
+        };
+        log::info!("Tag {}: raw={:.3}, uv={:.3}, normalized={:.3}, rotated={}, -> {:?}",
+            detection.id, raw_pixel_ratio, tag_aspect_uv, normalized_aspect, is_rotated, detected_aspect.name());
         
         // Calculate screen dimensions and corners based on placement.
         // NOTE: pass self.config.input_aspect (live input texture aspect) NOT img_aspect
@@ -383,26 +410,29 @@ impl AprilTagAutoDetector {
         }
     }
     
-    /// Detect screen aspect ratio from the tag's **pixel** aspect ratio.
+    /// Detect screen aspect ratio from the normalized (unrotated) UV aspect ratio.
     ///
-    /// When a square tag is displayed as 16:9 content on a screen the hardware
-    /// maps that content to the screen's native aspect, distorting the tag:
-    ///   - 4:3  screen: ratio ≈ (4/3)/(16/9) = 0.75  (tag squashed horizontally)
-    ///   - 16:9 screen: ratio ≈ 1.0                   (tag undistorted)
-    ///   - 21:9 screen: ratio ≈ 21/16 ≈ 1.31          (tag stretched horizontally)
+    /// The tag content is 16:9 (stretched from square to fill 16:9 frame).
+    /// The screen's physical aspect ratio distorts this 16:9 content:
+    ///   - 4:3  screen: 16:9 content squashed horizontally → ratio ≈ 0.75
+    ///   - 16:9 screen: 16:9 content fits perfectly      → ratio ≈ 1.0
+    ///   - 21:9 screen: 16:9 content stretched horizontally → ratio ≈ 1.31
+    ///
+    /// Note: This function receives the *normalized* ratio where rotation has already
+    /// been accounted for (swapped back if the screen was rotated 90°/270°).
     ///
     /// Thresholds are midpoints between adjacent expected values (±15% perspective slack).
-    fn detect_aspect_ratio_from_tag_aspect(&self, tag_pixel_ratio: f32) -> AspectRatio {
-        log::info!("Tag pixel aspect ratio detection: {:.3}", tag_pixel_ratio);
+    fn detect_aspect_ratio_from_tag_aspect(&self, normalized_aspect: f32) -> AspectRatio {
+        log::info!("Screen native aspect ratio detection: {:.3}", normalized_aspect);
 
-        if tag_pixel_ratio < 0.875 {
-            log::info!("  -> Detected as 4:3 (pixel ratio {:.3} < 0.875)", tag_pixel_ratio);
+        if normalized_aspect < 0.875 {
+            log::info!("  -> Detected as 4:3 (ratio {:.3} < 0.875)", normalized_aspect);
             AspectRatio::Ratio4_3
-        } else if tag_pixel_ratio < 1.156 {
-            log::info!("  -> Detected as 16:9 (pixel ratio {:.3} in [0.875, 1.156))", tag_pixel_ratio);
+        } else if normalized_aspect < 1.156 {
+            log::info!("  -> Detected as 16:9 (ratio {:.3} in [0.875, 1.156))", normalized_aspect);
             AspectRatio::Ratio16_9
         } else {
-            log::info!("  -> Detected as 21:9 (pixel ratio {:.3} >= 1.156)", tag_pixel_ratio);
+            log::info!("  -> Detected as 21:9 (ratio {:.3} >= 1.156)", normalized_aspect);
             AspectRatio::Ratio21_9
         }
     }
