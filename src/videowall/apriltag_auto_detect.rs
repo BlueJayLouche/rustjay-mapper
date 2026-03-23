@@ -369,23 +369,38 @@ impl AprilTagAutoDetector {
         // the detection photo.
         let input_aspect = self.config.input_aspect;
         
-        // CRITICAL: For rotated screens (90°/270°), we need unadjusted dimensions
-        // so that swapping width/height gives the correct portrait shape.
-        // For natural orientation screens, use the standard calculation.
-        let calc_input_aspect = match orientation {
-            Orientation::Rotated90 | Orientation::Rotated270 => 1.0, // Don't adjust for rotated
-            _ => input_aspect, // Standard calculation for natural orientation
+        // CRITICAL: For rotated screens (90°/270°), use inverse aspect ratio.
+        // A 16:9 screen rotated 90° becomes 9:16 portrait (aspect = 0.5625).
+        // We calculate with this inverted aspect, then the width/height will
+        // naturally be correct for portrait without needing complex swap logic.
+        let (calc_aspect, calc_input_aspect) = match orientation {
+            Orientation::Rotated90 | Orientation::Rotated270 => {
+                // Use inverse aspect for rotated screens (e.g., 16:9 becomes 9:16)
+                (1.0 / detected_aspect.as_f32(), input_aspect)
+            }
+            _ => (detected_aspect.as_f32(), input_aspect), // Normal for natural orientation
+        };
+        
+        // Use calc_aspect for dimension calculation (inverse for rotated screens)
+        let calc_aspect_ratio = match orientation {
+            Orientation::Rotated90 | Orientation::Rotated270 => {
+                AspectRatio::Custom { 
+                    w: (calc_aspect * 100.0) as u32, 
+                    h: 100 
+                }
+            }
+            _ => detected_aspect,
         };
         
         let (screen_width, screen_height, screen_corners) = match self.config.tag_placement {
             TagPlacement::Centered => {
-                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, calc_input_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, calc_aspect_ratio, calc_input_aspect)
             }
             TagPlacement::TopLeft => {
-                self.calculate_corner_screen_with_aspect(&corners, center, orientation, detected_aspect, calc_input_aspect)
+                self.calculate_corner_screen_with_aspect(&corners, center, orientation, calc_aspect_ratio, calc_input_aspect)
             }
             _ => {
-                self.calculate_centered_screen_with_aspect(&corners, center, detected_aspect, calc_input_aspect)
+                self.calculate_centered_screen_with_aspect(&corners, center, calc_aspect_ratio, calc_input_aspect)
             }
         };
         
@@ -797,32 +812,18 @@ impl AprilTagAutoDetector {
                 idx, screen_id, output_col, output_row
             );
 
-            // Create source rect from detected screen corners (normalized UV coordinates)
-            // CRITICAL: For rotated screens (90°/270°), the source rect must be portrait (9:16)
-            // not landscape (16:9) because that's the actual shape of the rotated screen
-            let (src_width, src_height) = match screen.orientation {
-                Orientation::Rotated90 | Orientation::Rotated270 => {
-                    // Portrait orientation - swap dimensions for sampling
-                    log::info!("Screen {} rotated {:?}: swapping {}x{} -> {}x{}", 
-                        screen.screen_id, screen.orientation,
-                        screen.width, screen.height, screen.height, screen.width);
-                    (screen.height, screen.width)
-                }
-                _ => {
-                    log::info!("Screen {} normal orientation: {}x{}", 
-                        screen.screen_id, screen.width, screen.height);
-                    (screen.width, screen.height)
-                }
-            };
-            
+            // Create source rect from detected screen corners
+            // For rotated screens, dimensions are already calculated with inverse aspect ratio
+            // so they naturally form the correct portrait rectangle (e.g., 9:16 for rotated 16:9)
             let source_rect = super::Rect::new(
                 screen.corners[0].x, // Top-left X
                 screen.corners[0].y, // Top-left Y
-                src_width,           // Width (swapped for rotated screens)
-                src_height,          // Height (swapped for rotated screens)
+                screen.width,        // Width (already correct for both orientations)
+                screen.height,       // Height
             );
-            log::info!("Screen {} source rect: [{:.3}, {:.3}, {:.3}, {:.3}]", 
-                screen.screen_id, source_rect.x, source_rect.y, source_rect.width, source_rect.height);
+            log::info!("Screen {} source rect: [{:.3}, {:.3}, {:.3}, {:.3}] orientation={:?}", 
+                screen.screen_id, source_rect.x, source_rect.y, source_rect.width, source_rect.height,
+                screen.orientation);
 
             let mapping = GridCellMapping::new(idx, output_position)
                 .with_aspect_ratio(screen.aspect_ratio)
