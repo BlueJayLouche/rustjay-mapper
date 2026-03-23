@@ -751,11 +751,21 @@ impl AprilTagAutoDetector {
             );
 
             // Create source rect from detected screen corners (normalized UV coordinates)
+            // CRITICAL: For rotated screens (90°/270°), swap width/height in source rect
+            // because the sampling region should be portrait (9:16) not landscape (16:9)
+            let (src_width, src_height) = match screen.orientation {
+                Orientation::Rotated90 | Orientation::Rotated270 => {
+                    // Portrait orientation - swap dimensions for sampling
+                    (screen.height, screen.width)
+                }
+                _ => (screen.width, screen.height),
+            };
+            
             let source_rect = super::Rect::new(
                 screen.corners[0].x, // Top-left X
                 screen.corners[0].y, // Top-left Y
-                screen.width,        // Width
-                screen.height,       // Height
+                src_width,           // Width (swapped for rotated screens)
+                src_height,          // Height (swapped for rotated screens)
             );
 
             let mapping = GridCellMapping::new(idx, output_position)
