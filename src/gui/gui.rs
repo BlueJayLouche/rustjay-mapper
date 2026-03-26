@@ -7,7 +7,9 @@
 #![allow(deprecated)]
 
 use crate::config::AppConfig;
-use crate::core::{SharedState, NdiOutputCommand, InputCommand, InputMapping};
+use crate::core::{SharedState, InputCommand, InputMapping};
+#[cfg(feature = "ndi")]
+use crate::core::NdiOutputCommand;
 use crate::videowall::{CalibrationController, CalibrationPhase, CalibrationStatus, GridSize, PresetManager, ConfigPreset,
     VideoMatrixConfig, InputGridConfig, GridCellMapping, GridPosition, AspectRatio, Orientation,
     AprilTagAutoDetector, AprilTagGenerator, AprilTagFamily, AutoDetectConfig, TagPlacement,
@@ -33,6 +35,7 @@ pub struct ControlGui {
     
     // Device lists
     webcam_devices: Vec<String>,
+    #[cfg(feature = "ndi")]
     ndi_sources: Vec<String>,
     syphon_servers: Vec<String>,
     
@@ -42,7 +45,9 @@ pub struct ControlGui {
     // Per-slot selection state for each source type
     selected_webcam1: i32,
     selected_webcam2: i32,
+    #[cfg(feature = "ndi")]
     selected_ndi1: i32,
+    #[cfg(feature = "ndi")]
     selected_ndi2: i32,
     selected_syphon1: i32,
     selected_syphon2: i32,
@@ -51,6 +56,7 @@ pub struct ControlGui {
     mapping_tab_input: i32,
     
     // Output
+    #[cfg(feature = "ndi")]
     ndi_output_name: String,
     syphon_server_name: String,
     
@@ -90,30 +96,38 @@ pub struct ControlGui {
 
 impl ControlGui {
     pub fn new(_config: &AppConfig, shared_state: Arc<Mutex<SharedState>>) -> anyhow::Result<Self> {
-        let (ndi_output_name, syphon_server_name, mapping1, mapping2) = {
+        let (syphon_server_name, mapping1, mapping2) = {
             let state = shared_state.lock().unwrap();
             (
-                state.ndi_output.stream_name.clone(),
                 state.syphon_output.server_name.clone(),
                 state.input1_mapping,
                 state.input2_mapping,
             )
+        };
+        #[cfg(feature = "ndi")]
+        let ndi_output_name = {
+            let state = shared_state.lock().unwrap();
+            state.ndi_output.stream_name.clone()
         };
         
         Ok(Self {
             shared_state,
             current_tab: MainTab::Inputs,
             webcam_devices: Vec::new(),
+            #[cfg(feature = "ndi")]
             ndi_sources: Vec::new(),
             syphon_servers: Vec::new(),
             active_input_slot: 0,
             selected_webcam1: 0,
             selected_webcam2: 0,
+            #[cfg(feature = "ndi")]
             selected_ndi1: 0,
+            #[cfg(feature = "ndi")]
             selected_ndi2: 0,
             selected_syphon1: 0,
             selected_syphon2: 0,
             mapping_tab_input: 0,
+            #[cfg(feature = "ndi")]
             ndi_output_name,
             syphon_server_name,
             mapping_edit_input1: mapping1,
@@ -189,10 +203,16 @@ impl ControlGui {
     /// Call this each frame in `build_ui()` to pick up background discovery results.
     pub fn sync_discovered_devices(&mut self) {
         let state = self.shared_state.lock().unwrap();
-        if !state.discovered_webcams.is_empty() || !state.discovered_ndi_sources.is_empty() {
+        let has_webcams = !state.discovered_webcams.is_empty();
+        #[cfg(feature = "ndi")]
+        let has_ndi = !state.discovered_ndi_sources.is_empty();
+        #[cfg(not(feature = "ndi"))]
+        let has_ndi = false;
+        if has_webcams || has_ndi {
             if state.discovered_webcams != self.webcam_devices {
                 self.webcam_devices = state.discovered_webcams.clone();
             }
+            #[cfg(feature = "ndi")]
             if state.discovered_ndi_sources != self.ndi_sources {
                 self.ndi_sources = state.discovered_ndi_sources.clone();
             }
@@ -702,6 +722,7 @@ impl ControlGui {
         }
 
         // ── NDI ───────────────────────────────────────────────────────────────
+        #[cfg(feature = "ndi")]
         {
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "NDI");
             let ndi_all = self.ndi_sources.clone();
@@ -727,6 +748,7 @@ impl ControlGui {
         }
 
         // ── OBS (via NDI) ─────────────────────────────────────────────────────
+        #[cfg(feature = "ndi")]
         {
             ui.text_colored([0.0, 1.0, 1.0, 1.0], "OBS (via NDI)");
             let ndi_all = self.ndi_sources.clone();
@@ -906,26 +928,29 @@ impl ControlGui {
         ui.separator();
         
         // NDI Output section
-        ui.text_colored([0.0, 1.0, 0.5, 1.0], "NDI Output");
-        
-        ui.input_text("Stream Name", &mut self.ndi_output_name)
-            .build();
-        
-        let ndi_active = {
-            let state = self.shared_state.lock().unwrap();
-            state.ndi_output.is_active
-        };
-        
-        if !ndi_active {
-            if ui.button("Start NDI Output") {
-                let mut state = self.shared_state.lock().unwrap();
-                state.ndi_output.stream_name = self.ndi_output_name.clone();
-                state.ndi_output_command = NdiOutputCommand::Start;
-            }
-        } else {
-            if ui.button("Stop NDI Output") {
-                let mut state = self.shared_state.lock().unwrap();
-                state.ndi_output_command = NdiOutputCommand::Stop;
+        #[cfg(feature = "ndi")]
+        {
+            ui.text_colored([0.0, 1.0, 0.5, 1.0], "NDI Output");
+
+            ui.input_text("Stream Name", &mut self.ndi_output_name)
+                .build();
+
+            let ndi_active = {
+                let state = self.shared_state.lock().unwrap();
+                state.ndi_output.is_active
+            };
+
+            if !ndi_active {
+                if ui.button("Start NDI Output") {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.ndi_output.stream_name = self.ndi_output_name.clone();
+                    state.ndi_output_command = NdiOutputCommand::Start;
+                }
+            } else {
+                if ui.button("Stop NDI Output") {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.ndi_output_command = NdiOutputCommand::Stop;
+                }
             }
         }
         
@@ -967,13 +992,14 @@ impl ControlGui {
         ui.separator();
         ui.text("Status:");
         let state = self.shared_state.lock().unwrap();
-        ui.text(format!("NDI Output: {}", 
+        #[cfg(feature = "ndi")]
+        ui.text(format!("NDI Output: {}",
             if state.ndi_output.is_active { "Active" } else { "Inactive" }));
-        ui.text(format!("Input 1: {} ({}x{})", 
+        ui.text(format!("Input 1: {} ({}x{})",
             if state.ndi_input1.is_active { "Active" } else { "Inactive" },
             state.ndi_input1.width,
             state.ndi_input1.height));
-        ui.text(format!("Input 2: {} ({}x{})", 
+        ui.text(format!("Input 2: {} ({}x{})",
             if state.ndi_input2.is_active { "Active" } else { "Inactive" },
             state.ndi_input2.width,
             state.ndi_input2.height));
@@ -1404,30 +1430,32 @@ impl ControlGui {
     }
     
     /// Select NDI source for input
+    #[cfg(feature = "ndi")]
     fn select_ndi(&mut self, input_num: i32, source_name: String) {
         let mut state = self.shared_state.lock().unwrap();
         let request = InputCommand::StartNdi { source_name: source_name.clone() };
-        
+
         if input_num == 1 {
             state.input1_command = request;
         } else {
             state.input2_command = request;
         }
-        
+
         log::info!("Selected NDI source '{}' for input {}", source_name, input_num);
     }
-    
+
     /// Select OBS source for input
+    #[cfg(feature = "ndi")]
     fn select_obs(&mut self, input_num: i32, source_name: String) {
         let mut state = self.shared_state.lock().unwrap();
         let request = InputCommand::StartObs { source_name: source_name.clone() };
-        
+
         if input_num == 1 {
             state.input1_command = request;
         } else {
             state.input2_command = request;
         }
-        
+
         log::info!("Selected OBS source '{}' for input {}", source_name, input_num);
     }
     

@@ -12,8 +12,21 @@ use anyhow::Result;
 use std::sync::{mpsc, Arc};
 
 // NDI input support
+#[cfg(feature = "ndi")]
 pub mod ndi;
+#[cfg(feature = "ndi")]
 pub use ndi::{NdiReceiver, NdiFrame, list_ndi_sources, is_ndi_available};
+
+// Placeholder types when NDI is disabled
+#[cfg(not(feature = "ndi"))]
+pub fn list_ndi_sources(_timeout_ms: u32) -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(not(feature = "ndi"))]
+pub fn is_ndi_available() -> bool {
+    false
+}
 
 // Webcam support (optional)
 #[cfg(feature = "webcam")]
@@ -69,7 +82,9 @@ pub fn list_cameras() -> Vec<String> {
 pub enum InputType {
     None,
     Webcam,
+    #[cfg(feature = "ndi")]
     Ndi,
+    #[cfg(feature = "ndi")]
     Obs,  // OBS via NDI
     #[cfg(target_os = "macos")]
     Syphon,
@@ -81,7 +96,9 @@ impl InputType {
         match self {
             InputType::None => "None",
             InputType::Webcam => "Webcam",
+            #[cfg(feature = "ndi")]
             InputType::Ndi => "NDI",
+            #[cfg(feature = "ndi")]
             InputType::Obs => "OBS (NDI)",
             #[cfg(target_os = "macos")]
             InputType::Syphon => "Syphon",
@@ -113,6 +130,7 @@ pub struct InputSource {
     webcam: Option<()>,
     
     frame_receiver: Option<mpsc::Receiver<WebcamFrame>>,
+    #[cfg(feature = "ndi")]
     ndi_receiver: Option<NdiReceiver>,
     
     // Syphon receiver (macOS only)
@@ -141,6 +159,7 @@ impl InputSource {
             has_new_frame: false,
             webcam: None,
             frame_receiver: None,
+            #[cfg(feature = "ndi")]
             ndi_receiver: None,
             #[cfg(target_os = "macos")]
             syphon_receiver: None,
@@ -191,29 +210,43 @@ impl InputSource {
     }
     
     /// Start NDI receiver
+    #[cfg(feature = "ndi")]
     pub fn start_ndi(&mut self, source_name: impl Into<String>) -> Result<()> {
         self.stop();
-        
+
         let source_name = source_name.into();
         let mut ndi = NdiReceiver::new(source_name.clone());
         ndi.start()?;
-        
+
         self.input_type = InputType::Ndi;
         self.source_name = source_name.clone();
         self.active = true;
         self.ndi_receiver = Some(ndi);
-        
+
         log::info!("Started NDI input: {}", source_name);
-        
+
         Ok(())
     }
-    
+
+    /// Start NDI receiver (stub when NDI is disabled)
+    #[cfg(not(feature = "ndi"))]
+    pub fn start_ndi(&mut self, _source_name: impl Into<String>) -> Result<()> {
+        Err(anyhow::anyhow!("NDI support not compiled. Enable the 'ndi' feature."))
+    }
+
     /// Start OBS (via NDI)
+    #[cfg(feature = "ndi")]
     pub fn start_obs(&mut self, source_name: impl Into<String>) -> Result<()> {
         // OBS via NDI uses the same mechanism as regular NDI
         self.start_ndi(source_name)?;
         self.input_type = InputType::Obs;
         Ok(())
+    }
+
+    /// Start OBS (stub when NDI is disabled)
+    #[cfg(not(feature = "ndi"))]
+    pub fn start_obs(&mut self, _source_name: impl Into<String>) -> Result<()> {
+        Err(anyhow::anyhow!("NDI support not compiled. Enable the 'ndi' feature."))
     }
     
     /// Start Syphon receiver (macOS only, requires wgpu initialization)
@@ -279,6 +312,7 @@ impl InputSource {
         }
         
         // Stop NDI
+        #[cfg(feature = "ndi")]
         if let Some(mut ndi) = self.ndi_receiver.take() {
             ndi.stop();
         }
@@ -320,6 +354,7 @@ impl InputSource {
         }
         
         // Handle NDI frames
+        #[cfg(feature = "ndi")]
         if let Some(ref mut ndi) = self.ndi_receiver {
             if let Some(frame) = ndi.get_latest_frame() {
                 self.resolution = (frame.width, frame.height);
@@ -388,6 +423,7 @@ impl InputSource {
         match self.input_type {
             InputType::None => "None".to_string(),
             InputType::Webcam => format!("Webcam {}", self.device_index),
+            #[cfg(feature = "ndi")]
             InputType::Ndi | InputType::Obs => self.source_name.clone(),
             #[cfg(target_os = "macos")]
             InputType::Syphon => self.source_name.clone(),
@@ -405,6 +441,7 @@ impl Drop for InputSource {
 #[derive(Default)]
 struct DiscoveryResults {
     webcam_devices: Option<Vec<String>>,
+    #[cfg(feature = "ndi")]
     ndi_sources: Option<Vec<String>>,
 }
 
@@ -417,6 +454,7 @@ pub struct InputManager {
 
     // Cached device lists (last known good)
     webcam_devices: Vec<String>,
+    #[cfg(feature = "ndi")]
     ndi_sources: Vec<String>,
 
     // Async discovery
@@ -436,6 +474,7 @@ impl InputManager {
             input1: InputSource::new(),
             input2: InputSource::new(),
             webcam_devices: Vec::new(),
+            #[cfg(feature = "ndi")]
             ndi_sources: Vec::new(),
             discovery_rx: None,
             is_discovering: false,
@@ -490,7 +529,10 @@ impl InputManager {
             }
 
             // NDI source discovery (blocks for timeout_ms internally)
-            results.ndi_sources = Some(list_ndi_sources(2000));
+            #[cfg(feature = "ndi")]
+            {
+                results.ndi_sources = Some(list_ndi_sources(2000));
+            }
 
             let _ = tx.send(results);
         });
@@ -518,6 +560,7 @@ impl InputManager {
                     log::info!("[InputManager] Found {} webcam(s)", devices.len());
                     self.webcam_devices = devices;
                 }
+                #[cfg(feature = "ndi")]
                 if let Some(sources) = results.ndi_sources {
                     log::info!("[InputManager] Found {} NDI source(s)", sources.len());
                     self.ndi_sources = sources;
@@ -542,8 +585,15 @@ impl InputManager {
     }
 
     /// Get cached NDI source list. Call `kick_discovery()` to refresh.
+    #[cfg(feature = "ndi")]
     pub fn get_ndi_sources(&self) -> &[String] {
         &self.ndi_sources
+    }
+
+    /// Get cached NDI source list (stub when NDI is disabled).
+    #[cfg(not(feature = "ndi"))]
+    pub fn get_ndi_sources(&self) -> &[String] {
+        &[]
     }
     
     /// Update all inputs (poll for new frames)
@@ -563,21 +613,25 @@ impl InputManager {
     }
     
     /// Start NDI on input 1
+    #[cfg(feature = "ndi")]
     pub fn start_input1_ndi(&mut self, source_name: impl Into<String>) -> Result<()> {
         self.input1.start_ndi(source_name)
     }
-    
+
     /// Start NDI on input 2
+    #[cfg(feature = "ndi")]
     pub fn start_input2_ndi(&mut self, source_name: impl Into<String>) -> Result<()> {
         self.input2.start_ndi(source_name)
     }
-    
+
     /// Start OBS on input 1
+    #[cfg(feature = "ndi")]
     pub fn start_input1_obs(&mut self, source_name: impl Into<String>) -> Result<()> {
         self.input1.start_obs(source_name)
     }
-    
+
     /// Start OBS on input 2
+    #[cfg(feature = "ndi")]
     pub fn start_input2_obs(&mut self, source_name: impl Into<String>) -> Result<()> {
         self.input2.start_obs(source_name)
     }

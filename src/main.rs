@@ -22,6 +22,7 @@ mod core;
 mod engine;
 mod gui;
 mod input;
+#[cfg(feature = "ndi")]
 mod ndi;
 mod output;
 mod videowall;

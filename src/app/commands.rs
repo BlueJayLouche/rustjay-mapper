@@ -1,5 +1,7 @@
 use super::App;
-use crate::core::{InputCommand, NdiOutputCommand, NdiInputState, SharedState};
+use crate::core::{InputCommand, NdiInputState, SharedState};
+#[cfg(feature = "ndi")]
+use crate::core::NdiOutputCommand;
 
 /// Acquire a mutex lock, recovering from poisoning.
 fn lock(state: &std::sync::Mutex<SharedState>) -> std::sync::MutexGuard<SharedState> {
@@ -10,6 +12,7 @@ impl App {
     /// Dispatch all pending commands. Call once per frame.
     pub(super) fn dispatch_commands(&mut self) {
         self.process_input_commands();
+        #[cfg(feature = "ndi")]
         self.process_output_commands();
     }
 
@@ -50,6 +53,7 @@ impl App {
                     None => {}
                 }
             }
+            #[cfg(feature = "ndi")]
             InputCommand::StartNdi { source_name } => {
                 log::info!("Starting NDI on input {}: {}", slot, source_name);
                 let result = if let Some(ref mut manager) = self.input_manager {
@@ -72,6 +76,7 @@ impl App {
                     None => {}
                 }
             }
+            #[cfg(feature = "ndi")]
             InputCommand::StartObs { source_name } => {
                 log::info!("Starting OBS on input {}: {}", slot, source_name);
                 let result = if let Some(ref mut manager) = self.input_manager {
@@ -139,6 +144,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "ndi")]
     fn process_output_commands(&mut self) {
         let command = {
             let mut state = lock(&self.shared_state);

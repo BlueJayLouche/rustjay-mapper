@@ -18,7 +18,9 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "ndi")]
 mod readback;
+#[cfg(feature = "ndi")]
 use readback::ReadbackPool;
 
 /// Trait for all local GPU-sharing output mechanisms (Syphon, Spout, etc.)
@@ -43,10 +45,12 @@ pub use syphon::SyphonOutput;
 /// Manages all active output destinations.
 pub struct OutputManager {
     /// NDI network output.
+    #[cfg(feature = "ndi")]
     ndi_output: Option<crate::ndi::NdiOutputSender>,
 
     /// Readback pool for CPU-path outputs (NDI).
     /// Shared across all CPU-path destinations to amortize the cost.
+    #[cfg(feature = "ndi")]
     readback_pool: ReadbackPool,
 
     /// Syphon GPU-sharing output (macOS, zero-copy).
@@ -59,7 +63,9 @@ pub struct OutputManager {
 impl OutputManager {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "ndi")]
             ndi_output: None,
+            #[cfg(feature = "ndi")]
             readback_pool: ReadbackPool::new(),
             #[cfg(target_os = "macos")]
             syphon_output: None,
@@ -69,6 +75,7 @@ impl OutputManager {
 
     // ── NDI ──────────────────────────────────────────────────────────────────
 
+    #[cfg(feature = "ndi")]
     pub fn start_ndi(
         &mut self,
         name: &str,
@@ -82,12 +89,14 @@ impl OutputManager {
         Ok(())
     }
 
+    #[cfg(feature = "ndi")]
     pub fn stop_ndi(&mut self) {
         if self.ndi_output.take().is_some() {
             log::info!("NDI output stopped");
         }
     }
 
+    #[cfg(feature = "ndi")]
     pub fn is_ndi_active(&self) -> bool {
         self.ndi_output.is_some()
     }
@@ -147,25 +156,29 @@ impl OutputManager {
         }
 
         // ── CPU-path outputs (via readback pool) ──────────────────────────────
-        let needs_readback = self.ndi_output.is_some();
+        #[cfg(feature = "ndi")]
+        {
+            let needs_readback = self.ndi_output.is_some();
 
-        if needs_readback {
-            // Harvest the previous frame's readback (non-blocking).
-            if let Some((data, w, h)) = self.readback_pool.harvest_previous() {
-                if let Some(ndi) = &self.ndi_output {
-                    // Stride-strip: readback rows are aligned to
-                    // COPY_BYTES_PER_ROW_ALIGNMENT; NDI wants tight BGRA.
-                    let tight = strip_row_padding(&data, w, h);
-                    ndi.submit_frame(tight, w, h);
+            if needs_readback {
+                // Harvest the previous frame's readback (non-blocking).
+                if let Some((data, w, h)) = self.readback_pool.harvest_previous() {
+                    if let Some(ndi) = &self.ndi_output {
+                        // Stride-strip: readback rows are aligned to
+                        // COPY_BYTES_PER_ROW_ALIGNMENT; NDI wants tight BGRA.
+                        let tight = strip_row_padding(&data, w, h);
+                        ndi.submit_frame(tight, w, h);
+                    }
                 }
-            }
 
-            // Submit copy of the current frame into the pool.
-            self.readback_pool.submit_copy(texture, device, queue);
+                // Submit copy of the current frame into the pool.
+                self.readback_pool.submit_copy(texture, device, queue);
+            }
         }
     }
 
     pub fn shutdown(&mut self) {
+        #[cfg(feature = "ndi")]
         self.stop_ndi();
         #[cfg(target_os = "macos")]
         self.stop_syphon();
@@ -188,6 +201,7 @@ impl Drop for OutputManager {
 ///
 /// wgpu requires rows to be aligned to `COPY_BYTES_PER_ROW_ALIGNMENT` (256)
 /// bytes. NDI (and most CPU consumers) expect tightly-packed BGRA rows.
+#[cfg(feature = "ndi")]
 fn strip_row_padding(padded: &[u8], width: u32, height: u32) -> Vec<u8> {
     let bytes_per_pixel = 4usize;
     let tight_row = width as usize * bytes_per_pixel;

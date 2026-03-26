@@ -38,6 +38,7 @@ pub struct NdiInputState {
 }
 
 /// NDI output state
+#[cfg(feature = "ndi")]
 #[derive(Debug, Clone, Default)]
 pub struct NdiOutputState {
     /// Output stream name
@@ -81,6 +82,7 @@ pub struct AudioState {
 }
 
 /// Commands for NDI output control
+#[cfg(feature = "ndi")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NdiOutputCommand {
     None,
@@ -157,9 +159,11 @@ pub enum InputCommand {
         height: u32, 
         fps: u32 
     },
-    StartNdi { 
-        source_name: String 
+    #[cfg(feature = "ndi")]
+    StartNdi {
+        source_name: String
     },
+    #[cfg(feature = "ndi")]
     StartObs {
         source_name: String,
     },
@@ -185,7 +189,9 @@ pub struct SharedState {
     pub input2_command: InputCommand,
     
     // NDI Output
+    #[cfg(feature = "ndi")]
     pub ndi_output: NdiOutputState,
+    #[cfg(feature = "ndi")]
     pub ndi_output_command: NdiOutputCommand,
     
     // Syphon Output (macOS)
@@ -268,12 +274,14 @@ impl SharedState {
             input1_command: InputCommand::None,
             input2_command: InputCommand::None,
             
+            #[cfg(feature = "ndi")]
             ndi_output: NdiOutputState {
                 stream_name: "RustyMapper Output".to_string(),
                 is_active: false,
                 include_alpha: false,
                 frame_skip: 0,
             },
+            #[cfg(feature = "ndi")]
             ndi_output_command: NdiOutputCommand::None,
             
             syphon_output: SyphonOutputState {

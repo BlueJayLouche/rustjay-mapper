@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            asset: rustjay-mapper-macos-arm64
+          - target: x86_64-apple-darwin
+            asset: rustjay-mapper-macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-${{ matrix.target }}-release-
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features webcam
+
+      - name: Create .app bundle
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="RustJay Mapper.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/${{ matrix.target }}/release/rustjay-mapper "$APP/Contents/MacOS/"
+          chmod +x "$APP/Contents/MacOS/"*
+          sed "s/VERSION/$VERSION/g" macos/Info.plist > "$APP/Contents/Info.plist"
+          cp macos/AppIcon.icns "$APP/Contents/Resources/"
+
+      - name: Ad-hoc code sign
+        run: codesign --force --deep -s - "RustJay Mapper.app"
+
+      - name: Create .dmg
+        run: |
+          hdiutil create -volname "RustJay Mapper" \
+            -srcfolder "RustJay Mapper.app" \
+            -ov -format UDZO \
+            ${{ matrix.asset }}.dmg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}.dmg
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libvulkan-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            cmake \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-x86_64-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-x86_64-release-
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-gnu --no-default-features --features webcam
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/rustjay-mapper dist/
+          chmod +x dist/*
+          cd dist && tar czf ../rustjay-mapper-linux-x86_64.tar.gz *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustjay-mapper-linux-x86_64
+          path: rustjay-mapper-linux-x86_64.tar.gz
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x86_64-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-x86_64-release-
+
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-msvc --no-default-features --features webcam
+
+      - name: Package
+        run: |
+          mkdir dist
+          copy target\x86_64-pc-windows-msvc\release\rustjay-mapper.exe dist\
+          cd dist
+          Compress-Archive -Path * -DestinationPath ..\rustjay-mapper-windows-x86_64.zip
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustjay-mapper-windows-x86_64
+          path: rustjay-mapper-windows-x86_64.zip
+
+  release:
+    name: Create Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip

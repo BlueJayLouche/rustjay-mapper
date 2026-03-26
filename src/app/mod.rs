@@ -12,6 +12,7 @@ use crate::core::SharedState;
 use crate::engine::WgpuEngine;
 use crate::gui::{ControlGui, ImGuiRenderer};
 use crate::input::InputManager;
+#[cfg(feature = "ndi")]
 use crate::ndi::NdiOutputSender;
 use crate::videowall::VideoMatrixConfig;
 
@@ -62,6 +63,7 @@ pub(super) struct App {
     pub(super) input_manager: Option<InputManager>,
 
     // NDI output
+    #[cfg(feature = "ndi")]
     pub(super) ndi_output: Option<NdiOutputSender>,
 
     // Modifier state
@@ -89,6 +91,7 @@ impl App {
             control_gui: None,
             imgui_renderer: None,
             input_manager: None,
+            #[cfg(feature = "ndi")]
             ndi_output: None,
             shift_pressed: false,
             last_matrix_pattern: None,

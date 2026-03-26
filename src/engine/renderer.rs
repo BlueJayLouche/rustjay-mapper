@@ -636,6 +636,7 @@ impl WgpuEngine {
     }
     
     /// Start NDI output
+    #[cfg(feature = "ndi")]
     pub fn start_ndi_output(&mut self, name: &str, include_alpha: bool, _frame_skip: u8) -> anyhow::Result<()> {
         self.output_manager.start_ndi(
             name,
@@ -645,8 +646,9 @@ impl WgpuEngine {
         )?;
         Ok(())
     }
-    
+
     /// Stop NDI output
+    #[cfg(feature = "ndi")]
     pub fn stop_ndi_output(&mut self) {
         self.output_manager.stop_ndi();
     }

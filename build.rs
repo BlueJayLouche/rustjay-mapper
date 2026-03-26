@@ -26,31 +26,33 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", syphon_dir);
         println!("cargo:warning=Syphon framework found at: {}", syphon_dir);
 
-        // ===== NDI Library =====
-        // Honour NDI_SDK_DIR env var, then fall back to standard macOS install locations.
-        let ndi_lib_dir = std::env::var("NDI_SDK_DIR")
-            .ok()
-            .map(|sdk| {
-                let p = std::path::PathBuf::from(&sdk).join("lib/macOS");
-                if p.exists() { p } else { std::path::PathBuf::from(sdk).join("lib") }
-            })
-            .or_else(|| {
-                let candidates = [
-                    "/Library/NDI SDK for Apple/lib/macOS",
-                    "/Library/NDI SDK for macOS/lib/macOS",
-                    "/Library/NDI 6 SDK/lib/macOS",
-                    "/Library/NDI SDK/lib/macOS",
-                    "/Library/NewTek/NDI SDK/lib/macOS",
-                    "/usr/local/lib",
-                ];
-                candidates.iter()
-                    .find(|p| std::path::Path::new(p).join("libndi.dylib").exists())
-                    .map(|p| std::path::PathBuf::from(p))
-            });
+        // ===== NDI Library (only when ndi feature is enabled) =====
+        if std::env::var("CARGO_FEATURE_NDI").is_ok() {
+            // Honour NDI_SDK_DIR env var, then fall back to standard macOS install locations.
+            let ndi_lib_dir = std::env::var("NDI_SDK_DIR")
+                .ok()
+                .map(|sdk| {
+                    let p = std::path::PathBuf::from(&sdk).join("lib/macOS");
+                    if p.exists() { p } else { std::path::PathBuf::from(sdk).join("lib") }
+                })
+                .or_else(|| {
+                    let candidates = [
+                        "/Library/NDI SDK for Apple/lib/macOS",
+                        "/Library/NDI SDK for macOS/lib/macOS",
+                        "/Library/NDI 6 SDK/lib/macOS",
+                        "/Library/NDI SDK/lib/macOS",
+                        "/Library/NewTek/NDI SDK/lib/macOS",
+                        "/usr/local/lib",
+                    ];
+                    candidates.iter()
+                        .find(|p| std::path::Path::new(p).join("libndi.dylib").exists())
+                        .map(|p| std::path::PathBuf::from(p))
+                });
 
-        if let Some(ref dir) = ndi_lib_dir {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-            println!("cargo:warning=NDI rpath: {}", dir.display());
+            if let Some(ref dir) = ndi_lib_dir {
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+                println!("cargo:warning=NDI rpath: {}", dir.display());
+            }
         }
 
         // Standard executable-relative rpaths for bundled deployments
@@ -60,6 +62,7 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
 
         println!("cargo:rerun-if-changed=build.rs");
+        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NDI");
         println!("cargo:rerun-if-env-changed=NDI_SDK_DIR");
         println!("cargo:rerun-if-env-changed=SYPHON_FRAMEWORK_DIR");
         println!("cargo:rerun-if-env-changed=CARGO_HOME");
