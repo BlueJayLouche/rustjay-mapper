@@ -119,45 +119,9 @@ jobs:
           name: rustjay-mapper-linux-x86_64
           path: rustjay-mapper-linux-x86_64.tar.gz
 
-  build-windows:
-    name: Build Windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: windows-x86_64-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: windows-x86_64-release-
-
-      - name: Build
-        run: cargo build --release --target x86_64-pc-windows-msvc --no-default-features --features webcam
-
-      - name: Package
-        run: |
-          mkdir dist
-          copy target\x86_64-pc-windows-msvc\release\rustjay-mapper.exe dist\
-          cd dist
-          Compress-Archive -Path * -DestinationPath ..\rustjay-mapper-windows-x86_64.zip
-        shell: pwsh
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustjay-mapper-windows-x86_64
-          path: rustjay-mapper-windows-x86_64.zip
-
   release:
     name: Create Release
-    needs: [build-macos, build-linux, build-windows]
+    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
