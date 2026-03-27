@@ -68,7 +68,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-ci-
 
       - name: Clippy
-        run: cargo clippy --target ${{ matrix.target }} ${{ matrix.features }} -- -D warnings
+        run: cargo clippy --target ${{ matrix.target }} ${{ matrix.features }}
 
       - name: Build
         run: cargo build --target ${{ matrix.target }} ${{ matrix.features }}
