@@ -64,7 +64,21 @@ See [DESIGN.md](DESIGN.md) for the full architecture document.
 └──────────────┘ └──────────┘ └────────────────┘
 ```
 
-## Building
+## Install
+
+Pre-built binaries are available on the [Releases](https://github.com/BlueJayLouche/rustjay-mapper/releases) page.
+
+| Platform | Format | Notes |
+|----------|--------|-------|
+| macOS Apple Silicon | `.dmg` | Ad-hoc signed. Right-click → Open on first launch. |
+| macOS Intel | `.dmg` | Ad-hoc signed. Right-click → Open on first launch. |
+| Linux x86_64 | `.tar.gz` | Requires Vulkan-capable GPU. |
+
+Download the `.dmg`, open it, and drag RustJay Mapper to your Applications folder. On Linux, extract the tarball and run the binary directly.
+
+> NDI is not included in release builds. For NDI support, install the NDI SDK and build from source with `cargo build --release`.
+
+## Building from Source
 
 ### Requirements
 
