@@ -79,10 +79,26 @@ impl Default for ResolutionConfig {
     }
 }
 
+/// Legacy application configuration for migration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyAppConfig {
+    pub output_window: WindowConfig,
+    pub control_window: ControlWindowConfig,
+    pub resolution: ResolutionConfig,
+    pub audio_enabled: bool,
+    #[cfg(feature = "ndi")]
+    pub ndi_input_enabled: bool,
+    #[cfg(feature = "ndi")]
+    pub ndi_output_enabled: bool,
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub output_window: WindowConfig,
+    #[serde(default)]
+    pub mapping_window: WindowConfig,
+    #[serde(default)]
+    pub matrix_window: WindowConfig,
     pub control_window: ControlWindowConfig,
     pub resolution: ResolutionConfig,
     pub audio_enabled: bool,
@@ -94,8 +110,13 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
+        let mut mapping_window = WindowConfig::default();
+        mapping_window.title = "Rusty Mapper — Mapping".to_string();
+        let mut matrix_window = WindowConfig::default();
+        matrix_window.title = "Rusty Mapper — Matrix".to_string();
         Self {
-            output_window: WindowConfig::default(),
+            mapping_window,
+            matrix_window,
             control_window: ControlWindowConfig::default(),
             resolution: ResolutionConfig::default(),
             audio_enabled: true,
@@ -132,13 +153,29 @@ impl AppConfig {
         if config_path.exists() {
             match std::fs::read_to_string(&config_path) {
                 Ok(contents) => {
-                    match toml::from_str(&contents) {
+                    // Try new format first
+                    match toml::from_str::<Self>(&contents) {
                         Ok(config) => {
                             log::info!("Loaded configuration from {}", config_path.display());
                             return config;
                         }
-                        Err(e) => {
-                            log::warn!("Failed to parse config at {}: {}", config_path.display(), e);
+                        Err(_) => {
+                            // Try legacy format and migrate
+                            match toml::from_str::<LegacyAppConfig>(&contents) {
+                                Ok(legacy) => {
+                                    log::info!("Loaded legacy configuration from {}", config_path.display());
+                                    let mut config = Self::from_legacy(legacy);
+                                    if let Err(e) = config.save_default() {
+                                        log::warn!("Failed to migrate config: {}", e);
+                                    } else {
+                                        log::info!("Migrated config to new format");
+                                    }
+                                    return config;
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to parse config at {}: {}", config_path.display(), e);
+                                }
+                            }
                         }
                     }
                 }
@@ -153,9 +190,10 @@ impl AppConfig {
         if legacy_path.exists() {
             match std::fs::read_to_string(legacy_path) {
                 Ok(contents) => {
-                    match toml::from_str::<Self>(&contents) {
-                        Ok(config) => {
+                    match toml::from_str::<LegacyAppConfig>(&contents) {
+                        Ok(legacy) => {
                             log::info!("Loaded configuration from legacy location: {}", legacy_path.display());
+                            let mut config = Self::from_legacy(legacy);
                             // Migrate to new location
                             if let Err(e) = config.save_default() {
                                 log::warn!("Failed to migrate config to new location: {}", e);
@@ -182,6 +220,21 @@ impl AppConfig {
         }
         
         config
+    }
+    
+    /// Convert a legacy config (single output window) to the new format
+    fn from_legacy(legacy: LegacyAppConfig) -> Self {
+        Self {
+            mapping_window: legacy.output_window.clone(),
+            matrix_window: legacy.output_window,
+            control_window: legacy.control_window,
+            resolution: legacy.resolution,
+            audio_enabled: legacy.audio_enabled,
+            #[cfg(feature = "ndi")]
+            ndi_input_enabled: legacy.ndi_input_enabled,
+            #[cfg(feature = "ndi")]
+            ndi_output_enabled: legacy.ndi_output_enabled,
+        }
     }
     
     /// Save configuration to the default location

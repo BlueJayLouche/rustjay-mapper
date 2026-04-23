@@ -1,5 +1,6 @@
 use super::App;
-use crate::engine::WgpuEngine;
+use crate::app::output_window::{OutputType, OutputWindow};
+use crate::engine::RenderEngine;
 use crate::gui::{ControlGui, ImGuiRenderer};
 use crate::input::InputManager;
 use std::sync::Arc;
@@ -19,34 +20,21 @@ impl ApplicationHandler for App {
         }
         let instance = self.wgpu_instance.as_ref().unwrap();
 
-        // Create output window
-        if self.output_window.is_none() {
-            let window_attrs = WindowAttributes::default()
-                .with_title(&self.config.output_window.title)
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    self.config.output_window.width,
-                    self.config.output_window.height,
-                ))
-                .with_resizable(self.config.output_window.resizable)
-                .with_decorations(self.config.output_window.decorated);
-
-            let window = Arc::new(event_loop.create_window(window_attrs).unwrap());
-            window.set_cursor_visible(false);
-            self.output_window = Some(Arc::clone(&window));
-
+        // Create render engine (no window needed)
+        if self.render_engine.is_none() {
             let shared_state = Arc::clone(&self.shared_state);
             let config = self.config.clone();
 
-            match pollster::block_on(WgpuEngine::new(instance, window, &config, shared_state)) {
+            match pollster::block_on(RenderEngine::new(instance, &config, shared_state)) {
                 Ok(engine) => {
-                    log::info!("Output engine initialized");
+                    log::info!("Render engine initialized");
                     self.wgpu_adapter = Some(engine.adapter.clone());
                     self.wgpu_device = Some(Arc::clone(&engine.device));
                     self.wgpu_queue = Some(Arc::clone(&engine.queue));
-                    self.output_engine = Some(engine);
+                    self.render_engine = Some(engine);
                 }
                 Err(err) => {
-                    log::error!("Failed to create output engine: {}", err);
+                    log::error!("Failed to create render engine: {}", err);
                     event_loop.exit();
                     return;
                 }
@@ -55,7 +43,7 @@ impl ApplicationHandler for App {
 
         // Create control window
         if self.control_window.is_none() {
-            if let Some(ref engine) = self.output_engine {
+            if let Some(ref engine) = self.render_engine {
                 let device = Arc::clone(&engine.device);
                 let queue = Arc::clone(&engine.queue);
 
@@ -108,13 +96,17 @@ impl ApplicationHandler for App {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        // --- Output window ---
-        if let Some(ref output_window) = self.output_window {
-            if window_id == output_window.id() {
+        // --- Mapping output window ---
+        if let Some(ref mapping_output) = self.mapping_output {
+            if window_id == mapping_output.window_id() {
                 match event {
-                    WindowEvent::CloseRequested => event_loop.exit(),
-                    WindowEvent::CursorEntered { .. } => output_window.set_cursor_visible(false),
-                    WindowEvent::CursorLeft { .. } => output_window.set_cursor_visible(true),
+                    WindowEvent::CloseRequested => {
+                        let mut state = self.shared_state.lock().unwrap();
+                        state.mapping_window_open = false;
+                        self.mapping_output = None;
+                    }
+                    WindowEvent::CursorEntered { .. } => mapping_output.set_cursor_visible(false),
+                    WindowEvent::CursorLeft { .. } => mapping_output.set_cursor_visible(true),
                     WindowEvent::KeyboardInput { event, .. } => {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
                             self.shift_pressed = event.state == winit::event::ElementState::Pressed;
@@ -126,7 +118,7 @@ impl ApplicationHandler for App {
                                 }
                                 winit::keyboard::Key::Character(ch) => {
                                     if self.shift_pressed && ch.to_lowercase() == "f" {
-                                        self.toggle_fullscreen();
+                                        self.toggle_mapping_fullscreen();
                                     }
                                 }
                                 _ => {}
@@ -134,15 +126,14 @@ impl ApplicationHandler for App {
                         }
                     }
                     WindowEvent::Resized(size) => {
-                        if let Some(ref mut engine) = self.output_engine {
-                            engine.resize(size.width, size.height);
+                        if let Some(ref device) = self.wgpu_device {
+                            if let Some(ref mut output) = self.mapping_output {
+                                output.resize(size.width, size.height, device);
+                            }
                         }
                     }
                     WindowEvent::RedrawRequested => {
-                        if let Some(ref mut engine) = self.output_engine {
-                            engine.render();
-                            self.update_preview_textures();
-                        }
+                        self.present_outputs();
                     }
                     WindowEvent::MouseInput { state: button_state, button, .. } => {
                         if button == winit::event::MouseButton::Left {
@@ -161,8 +152,8 @@ impl ApplicationHandler for App {
                             if let (Some(display_id), Some(corner_idx)) =
                                 (shared_state.videowall_edit_display, shared_state.videowall_edit_corner)
                             {
-                                if let Some(ref output_window) = self.output_window {
-                                    let size = output_window.inner_size();
+                                if let Some(ref mapping_output) = self.mapping_output {
+                                    let size = mapping_output.inner_size();
                                     let x = position.x as f32 / size.width as f32;
                                     let y = position.y as f32 / size.height as f32;
                                     if let Some(ref mut config) = shared_state.videowall_config {
@@ -182,6 +173,51 @@ impl ApplicationHandler for App {
             }
         }
 
+        // --- Matrix output window ---
+        if let Some(ref matrix_output) = self.matrix_output {
+            if window_id == matrix_output.window_id() {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        let mut state = self.shared_state.lock().unwrap();
+                        state.matrix_window_open = false;
+                        self.matrix_output = None;
+                    }
+                    WindowEvent::CursorEntered { .. } => matrix_output.set_cursor_visible(false),
+                    WindowEvent::CursorLeft { .. } => matrix_output.set_cursor_visible(true),
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Shift) = &event.logical_key {
+                            self.shift_pressed = event.state == winit::event::ElementState::Pressed;
+                        }
+                        if event.state == winit::event::ElementState::Pressed {
+                            match &event.logical_key {
+                                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) => {
+                                    event_loop.exit();
+                                }
+                                winit::keyboard::Key::Character(ch) => {
+                                    if self.shift_pressed && ch.to_lowercase() == "f" {
+                                        self.toggle_matrix_fullscreen();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    WindowEvent::Resized(size) => {
+                        if let Some(ref device) = self.wgpu_device {
+                            if let Some(ref mut output) = self.matrix_output {
+                                output.resize(size.width, size.height, device);
+                            }
+                        }
+                    }
+                    WindowEvent::RedrawRequested => {
+                        self.present_outputs();
+                    }
+                    _ => {}
+                }
+                return;
+            }
+        }
+
         // --- Control window ---
         if let Some(ref control_window) = self.control_window {
             if window_id == control_window.id() {
@@ -191,7 +227,7 @@ impl ApplicationHandler for App {
 
                 match event {
                     WindowEvent::CloseRequested => {
-                        // Close control window only; keep output running
+                        // Close control window only; keep outputs running
                         self.control_window = None;
                         self.control_gui = None;
                         self.imgui_renderer = None;
@@ -219,7 +255,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Lazily initialize InputManager after GPU is available
         if self.input_manager.is_none() {
             let mut manager = InputManager::new();
@@ -236,13 +272,55 @@ impl ApplicationHandler for App {
         self.process_videowall_calibration();
         self.sync_video_wall_state();
         self.sync_video_matrix_state();
+        self.sync_output_window_states(event_loop);
         self.update_inputs();
 
-        if let Some(ref window) = self.output_window {
-            window.request_redraw();
+        // Render frame
+        if let Some(ref mut engine) = self.render_engine {
+            engine.render();
+        }
+
+        // Present to output windows
+        self.present_outputs();
+
+        // Update preview textures
+        self.update_preview_textures();
+
+        // Request redraw on all existing windows
+        if let Some(ref output) = self.mapping_output {
+            output.window().request_redraw();
+        }
+        if let Some(ref output) = self.matrix_output {
+            output.window().request_redraw();
         }
         if let Some(ref window) = self.control_window {
             window.request_redraw();
+        }
+    }
+}
+
+impl App {
+    /// Present the current render engine textures to all open output windows.
+    fn present_outputs(&mut self) {
+        // Extract options as locals so borrow checker sees independence
+        let engine = self.render_engine.as_ref();
+        let mapping_output = self.mapping_output.as_mut();
+        let matrix_output = self.matrix_output.as_mut();
+        let device = self.wgpu_device.as_ref();
+        let queue = self.wgpu_queue.as_ref();
+
+        if let Some(engine) = engine {
+            let (mapping_rt, matrix_rt, wt, mt) = engine.output_textures();
+
+            if let (Some(output), Some(device), Some(queue)) = (mapping_output, device, queue) {
+                let source = wt.map(|t| &t.texture).unwrap_or(&mapping_rt.texture);
+                output.present(source, device, queue);
+            }
+
+            if let (Some(output), Some(device), Some(queue)) = (matrix_output, device, queue) {
+                let source = mt.map(|t| &t.texture).unwrap_or(&matrix_rt.texture);
+                output.present(source, device, queue);
+            }
         }
     }
 }

@@ -5,5 +5,5 @@
 pub mod renderer;
 pub mod texture;
 
-pub use renderer::WgpuEngine;
+pub use renderer::RenderEngine;
 pub use texture::Texture;

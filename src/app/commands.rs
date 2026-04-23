@@ -2,6 +2,7 @@ use super::App;
 use crate::core::{InputCommand, NdiInputState, SharedState};
 #[cfg(feature = "ndi")]
 use crate::core::NdiOutputCommand;
+use std::sync::Arc;
 
 /// Acquire a mutex lock, recovering from poisoning.
 fn lock(state: &std::sync::Mutex<SharedState>) -> std::sync::MutexGuard<SharedState> {
@@ -13,7 +14,10 @@ impl App {
     pub(super) fn dispatch_commands(&mut self) {
         self.process_input_commands();
         #[cfg(feature = "ndi")]
-        self.process_output_commands();
+        self.process_mapping_output_commands();
+        #[cfg(feature = "ndi")]
+        self.process_matrix_output_commands();
+        self.process_syphon_output_commands();
     }
 
     fn process_input_commands(&mut self) {
@@ -145,35 +149,116 @@ impl App {
     }
 
     #[cfg(feature = "ndi")]
-    fn process_output_commands(&mut self) {
+    fn process_mapping_output_commands(&mut self) {
         let command = {
             let mut state = lock(&self.shared_state);
-            std::mem::replace(&mut state.ndi_output_command, NdiOutputCommand::None)
+            std::mem::replace(&mut state.mapping_ndi_output_command, NdiOutputCommand::None)
         };
 
         match command {
             NdiOutputCommand::Start => {
-                if self.ndi_output.is_none() {
-                    let (name, include_alpha) = {
-                        let state = lock(&self.shared_state);
-                        (state.ndi_output.stream_name.clone(), state.ndi_output.include_alpha)
+                let (name, include_alpha) = {
+                    let state = lock(&self.shared_state);
+                    (state.mapping_ndi_output.stream_name.clone(), state.mapping_ndi_output.include_alpha)
+                };
+                if let Some(ref mut output) = self.mapping_output {
+                    let (w, h) = {
+                        let size = output.inner_size();
+                        (size.width.max(1), size.height.max(1))
                     };
-                    if let Some(ref mut engine) = self.output_engine {
-                        if let Err(e) = engine.start_ndi_output(&name, include_alpha, 0) {
-                            log::error!("Failed to start NDI output: {:?}", e);
-                        } else {
-                            lock(&self.shared_state).ndi_output.is_active = true;
-                        }
+                    if let Err(e) = output.start_ndi(&name, w, h, include_alpha) {
+                        log::error!("Failed to start mapping NDI output: {:?}", e);
+                    } else {
+                        lock(&self.shared_state).mapping_ndi_output.is_active = true;
                     }
                 }
             }
             NdiOutputCommand::Stop => {
-                if let Some(ref mut engine) = self.output_engine {
-                    engine.stop_ndi_output();
+                if let Some(ref mut output) = self.mapping_output {
+                    output.stop_ndi();
                 }
-                lock(&self.shared_state).ndi_output.is_active = false;
+                lock(&self.shared_state).mapping_ndi_output.is_active = false;
             }
             NdiOutputCommand::None => {}
+        }
+    }
+
+    #[cfg(feature = "ndi")]
+    fn process_matrix_output_commands(&mut self) {
+        let command = {
+            let mut state = lock(&self.shared_state);
+            std::mem::replace(&mut state.matrix_ndi_output_command, NdiOutputCommand::None)
+        };
+
+        match command {
+            NdiOutputCommand::Start => {
+                let (name, include_alpha) = {
+                    let state = lock(&self.shared_state);
+                    (state.matrix_ndi_output.stream_name.clone(), state.matrix_ndi_output.include_alpha)
+                };
+                if let Some(ref mut output) = self.matrix_output {
+                    let (w, h) = {
+                        let size = output.inner_size();
+                        (size.width.max(1), size.height.max(1))
+                    };
+                    if let Err(e) = output.start_ndi(&name, w, h, include_alpha) {
+                        log::error!("Failed to start matrix NDI output: {:?}", e);
+                    } else {
+                        lock(&self.shared_state).matrix_ndi_output.is_active = true;
+                    }
+                }
+            }
+            NdiOutputCommand::Stop => {
+                if let Some(ref mut output) = self.matrix_output {
+                    output.stop_ndi();
+                }
+                lock(&self.shared_state).matrix_ndi_output.is_active = false;
+            }
+            NdiOutputCommand::None => {}
+        }
+    }
+
+    /// Process Syphon output start/stop for both windows (macOS).
+    fn process_syphon_output_commands(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            // Mapping Syphon
+            let (mapping_enabled, mapping_name) = {
+                let state = lock(&self.shared_state);
+                (state.mapping_syphon_output.enabled, state.mapping_syphon_output.server_name.clone())
+            };
+            if let Some(ref mut output) = self.mapping_output {
+                let should_be_active = mapping_enabled;
+                let is_active = output.is_syphon_active();
+                if should_be_active && !is_active {
+                    if let (Some(device), Some(queue)) = (&self.wgpu_device, &self.wgpu_queue) {
+                        if let Err(e) = output.start_syphon(&mapping_name, Arc::clone(device), Arc::clone(queue)) {
+                            log::error!("Failed to start mapping Syphon output: {:?}", e);
+                        }
+                    }
+                } else if !should_be_active && is_active {
+                    output.stop_syphon();
+                }
+            }
+
+            // Matrix Syphon
+            let (matrix_enabled, matrix_name) = {
+                let state = lock(&self.shared_state);
+                (state.matrix_syphon_output.enabled, state.matrix_syphon_output.server_name.clone())
+            };
+            if let Some(ref mut output) = self.matrix_output {
+                let should_be_active = matrix_enabled;
+                let is_active = output.is_syphon_active();
+                if should_be_active && !is_active {
+                    if let (Some(device), Some(queue)) = (&self.wgpu_device, &self.wgpu_queue) {
+                        if let Err(e) = output.start_syphon(&matrix_name, Arc::clone(device), Arc::clone(queue)) {
+                            log::error!("Failed to start matrix Syphon output: {:?}", e);
+                        }
+                    }
+                } else if !should_be_active && is_active {
+                    output.stop_syphon();
+                }
+            }
         }
     }
 }

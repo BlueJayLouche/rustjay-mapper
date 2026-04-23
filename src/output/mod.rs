@@ -19,9 +19,9 @@
 use std::sync::Arc;
 
 #[cfg(feature = "ndi")]
-mod readback;
+pub mod readback;
 #[cfg(feature = "ndi")]
-use readback::ReadbackPool;
+pub use readback::ReadbackPool;
 
 /// Trait for all local GPU-sharing output mechanisms (Syphon, Spout, etc.)
 pub trait LocalOutput: Send {
@@ -202,7 +202,7 @@ impl Drop for OutputManager {
 /// wgpu requires rows to be aligned to `COPY_BYTES_PER_ROW_ALIGNMENT` (256)
 /// bytes. NDI (and most CPU consumers) expect tightly-packed BGRA rows.
 #[cfg(feature = "ndi")]
-fn strip_row_padding(padded: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub fn strip_row_padding(padded: &[u8], width: u32, height: u32) -> Vec<u8> {
     let bytes_per_pixel = 4usize;
     let tight_row = width as usize * bytes_per_pixel;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;

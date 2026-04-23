@@ -180,22 +180,30 @@ pub enum InputCommand {
 pub struct SharedState {
     // Output settings
     pub output_mode: OutputMode,
-    pub output_fullscreen: bool,
+    
+    // Mapping output window
+    pub mapping_window_open: bool,
+    pub mapping_window_fullscreen: bool,
+    #[cfg(feature = "ndi")]
+    pub mapping_ndi_output: NdiOutputState,
+    #[cfg(feature = "ndi")]
+    pub mapping_ndi_output_command: NdiOutputCommand,
+    pub mapping_syphon_output: SyphonOutputState,
+    
+    // Matrix output window
+    pub matrix_window_open: bool,
+    pub matrix_window_fullscreen: bool,
+    #[cfg(feature = "ndi")]
+    pub matrix_ndi_output: NdiOutputState,
+    #[cfg(feature = "ndi")]
+    pub matrix_ndi_output_command: NdiOutputCommand,
+    pub matrix_syphon_output: SyphonOutputState,
     
     // NDI Input
     pub ndi_input1: NdiInputState,
     pub ndi_input2: NdiInputState,
     pub input1_command: InputCommand,
     pub input2_command: InputCommand,
-    
-    // NDI Output
-    #[cfg(feature = "ndi")]
-    pub ndi_output: NdiOutputState,
-    #[cfg(feature = "ndi")]
-    pub ndi_output_command: NdiOutputCommand,
-    
-    // Syphon Output (macOS)
-    pub syphon_output: SyphonOutputState,
     
     // Audio
     pub audio: AudioState,
@@ -212,12 +220,17 @@ pub struct SharedState {
     pub internal_width: u32,
     pub internal_height: u32,
     
-    // Input mapping for projection mapping
+    // Input mapping for projection mapping (Mapping output)
     pub input1_mapping: InputMapping,
     pub input2_mapping: InputMapping,
     
+    // Input mapping for Matrix output
+    pub matrix_input1_mapping: InputMapping,
+    pub matrix_input2_mapping: InputMapping,
+    
     // Mix parameters
     pub mix_amount: f32,  // 0 = input1 only, 1 = input2 only, 0.5 = equal mix
+    pub matrix_mix_amount: f32,
     
     // Video wall calibration
     pub videowall_calibration: Option<CalibrationController>,
@@ -255,7 +268,38 @@ impl SharedState {
         
         Self {
             output_mode: OutputMode::Processed,
-            output_fullscreen: config.output_window.fullscreen,
+            
+            mapping_window_open: false,
+            mapping_window_fullscreen: config.mapping_window.fullscreen,
+            #[cfg(feature = "ndi")]
+            mapping_ndi_output: NdiOutputState {
+                stream_name: "RustyMapper Mapping".to_string(),
+                is_active: false,
+                include_alpha: false,
+                frame_skip: 0,
+            },
+            #[cfg(feature = "ndi")]
+            mapping_ndi_output_command: NdiOutputCommand::None,
+            mapping_syphon_output: SyphonOutputState {
+                server_name: "RustyMapper Mapping".to_string(),
+                enabled: false,
+            },
+            
+            matrix_window_open: false,
+            matrix_window_fullscreen: config.matrix_window.fullscreen,
+            #[cfg(feature = "ndi")]
+            matrix_ndi_output: NdiOutputState {
+                stream_name: "RustyMapper Matrix".to_string(),
+                is_active: false,
+                include_alpha: false,
+                frame_skip: 0,
+            },
+            #[cfg(feature = "ndi")]
+            matrix_ndi_output_command: NdiOutputCommand::None,
+            matrix_syphon_output: SyphonOutputState {
+                server_name: "RustyMapper Matrix".to_string(),
+                enabled: false,
+            },
             
             ndi_input1: NdiInputState {
                 source_name: String::new(),
@@ -273,21 +317,6 @@ impl SharedState {
             },
             input1_command: InputCommand::None,
             input2_command: InputCommand::None,
-            
-            #[cfg(feature = "ndi")]
-            ndi_output: NdiOutputState {
-                stream_name: "RustyMapper Output".to_string(),
-                is_active: false,
-                include_alpha: false,
-                frame_skip: 0,
-            },
-            #[cfg(feature = "ndi")]
-            ndi_output_command: NdiOutputCommand::None,
-            
-            syphon_output: SyphonOutputState {
-                server_name: "RustyMapper".to_string(),
-                enabled: false,
-            },
             
             audio: AudioState {
                 fft: [0.0; 8],
@@ -311,8 +340,11 @@ impl SharedState {
             
             input1_mapping: InputMapping::default(),
             input2_mapping: InputMapping::default(),
+            matrix_input1_mapping: InputMapping::default(),
+            matrix_input2_mapping: InputMapping::default(),
             
             mix_amount: 0.5,
+            matrix_mix_amount: 0.5,
             
             videowall_calibration: None,
             videowall_config: None,
@@ -340,9 +372,14 @@ impl SharedState {
         self.effects_params.insert(name.to_string(), value);
     }
     
-    /// Toggle fullscreen state
-    pub fn toggle_fullscreen(&mut self) {
-        self.output_fullscreen = !self.output_fullscreen;
+    /// Toggle mapping fullscreen state
+    pub fn toggle_mapping_fullscreen(&mut self) {
+        self.mapping_window_fullscreen = !self.mapping_window_fullscreen;
+    }
+    
+    /// Toggle matrix fullscreen state
+    pub fn toggle_matrix_fullscreen(&mut self) {
+        self.matrix_window_fullscreen = !self.matrix_window_fullscreen;
     }
     
     /// Toggle effects

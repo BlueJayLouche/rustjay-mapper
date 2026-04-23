@@ -55,15 +55,33 @@ pub struct ControlGui {
     // Mapping tab input selection (0 = Input 1, 1 = Input 2)
     mapping_tab_input: i32,
     
-    // Output
+    // Mapping output
+    mapping_window_open: bool,
+    mapping_window_fullscreen: bool,
     #[cfg(feature = "ndi")]
-    ndi_output_name: String,
-    syphon_server_name: String,
+    mapping_ndi_name: String,
+    mapping_syphon_name: String,
+    
+    // Matrix output
+    matrix_window_open: bool,
+    matrix_window_fullscreen: bool,
+    #[cfg(feature = "ndi")]
+    matrix_ndi_name: String,
+    matrix_syphon_name: String,
     
     // Mapping edit state (local copy to reduce lock contention)
     mapping_edit_input1: InputMapping,
     mapping_edit_input2: InputMapping,
     mapping_needs_update: bool,
+    
+    // Matrix input mapping edit state
+    matrix_edit_input1: InputMapping,
+    matrix_edit_input2: InputMapping,
+    matrix_mapping_needs_update: bool,
+    
+    // Which subsystem's input settings to edit in the Mapping tab
+    // 0 = Mapping, 1 = Matrix
+    mapping_tab_target: i32,
     
     // Video Matrix state (grid-based mapping)
     matrix_input_grid_cols: i32,
@@ -96,18 +114,33 @@ pub struct ControlGui {
 
 impl ControlGui {
     pub fn new(_config: &AppConfig, shared_state: Arc<Mutex<SharedState>>) -> anyhow::Result<Self> {
-        let (syphon_server_name, mapping1, mapping2) = {
+        let (mapping_syphon_name, matrix_syphon_name, mapping1, mapping2, matrix_map1, matrix_map2) = {
             let state = shared_state.lock().unwrap();
             (
-                state.syphon_output.server_name.clone(),
+                state.mapping_syphon_output.server_name.clone(),
+                state.matrix_syphon_output.server_name.clone(),
                 state.input1_mapping,
                 state.input2_mapping,
+                state.matrix_input1_mapping,
+                state.matrix_input2_mapping,
             )
         };
         #[cfg(feature = "ndi")]
-        let ndi_output_name = {
+        let (mapping_ndi_name, matrix_ndi_name) = {
             let state = shared_state.lock().unwrap();
-            state.ndi_output.stream_name.clone()
+            (
+                state.mapping_ndi_output.stream_name.clone(),
+                state.matrix_ndi_output.stream_name.clone(),
+            )
+        };
+        let (mapping_window_open, matrix_window_open, mapping_fullscreen, matrix_fullscreen) = {
+            let state = shared_state.lock().unwrap();
+            (
+                state.mapping_window_open,
+                state.matrix_window_open,
+                state.mapping_window_fullscreen,
+                state.matrix_window_fullscreen,
+            )
         };
         
         Ok(Self {
@@ -127,12 +160,23 @@ impl ControlGui {
             selected_syphon1: 0,
             selected_syphon2: 0,
             mapping_tab_input: 0,
+            mapping_window_open,
+            mapping_window_fullscreen: mapping_fullscreen,
             #[cfg(feature = "ndi")]
-            ndi_output_name,
-            syphon_server_name,
+            mapping_ndi_name,
+            mapping_syphon_name,
+            matrix_window_open,
+            matrix_window_fullscreen: matrix_fullscreen,
+            #[cfg(feature = "ndi")]
+            matrix_ndi_name,
+            matrix_syphon_name,
             mapping_edit_input1: mapping1,
             mapping_edit_input2: mapping2,
             mapping_needs_update: false,
+            matrix_edit_input1: matrix_map1,
+            matrix_edit_input2: matrix_map2,
+            matrix_mapping_needs_update: false,
+            mapping_tab_target: 0,
             // Video Matrix defaults
             matrix_input_grid_cols: 3,
             matrix_input_grid_rows: 3,
@@ -226,6 +270,12 @@ impl ControlGui {
             state.input1_mapping = self.mapping_edit_input1;
             state.input2_mapping = self.mapping_edit_input2;
             self.mapping_needs_update = false;
+        }
+        if self.matrix_mapping_needs_update {
+            let mut state = self.shared_state.lock().unwrap();
+            state.matrix_input1_mapping = self.matrix_edit_input1;
+            state.matrix_input2_mapping = self.matrix_edit_input2;
+            self.matrix_mapping_needs_update = false;
         }
     }
     
@@ -668,17 +718,29 @@ impl ControlGui {
         ui.spacing();
         ui.separator();
         ui.spacing();
-        ui.text("Mix");
-        let mut mix_amount = {
+        ui.text("Mapping Mix");
+        let mut mapping_mix = {
             let state = self.shared_state.lock().unwrap();
             state.mix_amount
         };
-        if ui.slider("##mix", 0.0, 1.0, &mut mix_amount) {
+        if ui.slider("##mapping_mix", 0.0, 1.0, &mut mapping_mix) {
             let mut state = self.shared_state.lock().unwrap();
-            state.mix_amount = mix_amount;
+            state.mix_amount = mapping_mix;
         }
         ui.same_line();
-        ui.text(format!("{:.0}%  In2", mix_amount * 100.0));
+        ui.text(format!("{:.0}%  In2", mapping_mix * 100.0));
+        
+        ui.text("Matrix Mix");
+        let mut matrix_mix = {
+            let state = self.shared_state.lock().unwrap();
+            state.matrix_mix_amount
+        };
+        if ui.slider("##matrix_mix", 0.0, 1.0, &mut matrix_mix) {
+            let mut state = self.shared_state.lock().unwrap();
+            state.matrix_mix_amount = matrix_mix;
+        }
+        ui.same_line();
+        ui.text(format!("{:.0}%  In2", matrix_mix * 100.0));
     }
 
     /// Build the inline source sections for one input slot (template aesthetic).
@@ -824,6 +886,14 @@ impl ControlGui {
         ui.text("Projection Mapping");
         ui.separator();
         
+        // Select which subsystem to edit
+        ui.text("Edit Settings For:");
+        ui.radio_button("Mapping Output", &mut self.mapping_tab_target, 0);
+        ui.same_line();
+        ui.radio_button("Matrix Output", &mut self.mapping_tab_target, 1);
+        
+        ui.separator();
+        
         // Select which input to map
         ui.text("Select Input to Map:");
         ui.radio_button("Input 1", &mut self.mapping_tab_input, 0);
@@ -832,11 +902,19 @@ impl ControlGui {
         
         ui.separator();
         
-        // Get the mapping to edit
-        let mapping = if self.mapping_tab_input == 0 {
-            &mut self.mapping_edit_input1
+        // Get the mapping to edit based on target system
+        let mapping = if self.mapping_tab_target == 0 {
+            if self.mapping_tab_input == 0 {
+                &mut self.mapping_edit_input1
+            } else {
+                &mut self.mapping_edit_input2
+            }
         } else {
-            &mut self.mapping_edit_input2
+            if self.mapping_tab_input == 0 {
+                &mut self.matrix_edit_input1
+            } else {
+                &mut self.matrix_edit_input2
+            }
         };
         
         // Corner pinning section
@@ -846,46 +924,52 @@ impl ControlGui {
         // Top row
         ui.columns(2, "corners_top", false);
         ui.text("Top-Left");
-        if ui.slider("TL X", 0.0, 1.0, &mut mapping.corner0[0]) { self.mapping_needs_update = true; }
-        if ui.slider("TL Y", 0.0, 1.0, &mut mapping.corner0[1]) { self.mapping_needs_update = true; }
+        let needs_update = if self.mapping_tab_target == 0 {
+            &mut self.mapping_needs_update
+        } else {
+            &mut self.matrix_mapping_needs_update
+        };
+        
+        if ui.slider("TL X", 0.0, 1.0, &mut mapping.corner0[0]) { *needs_update = true; }
+        if ui.slider("TL Y", 0.0, 1.0, &mut mapping.corner0[1]) { *needs_update = true; }
         ui.next_column();
         ui.text("Top-Right");
-        if ui.slider("TR X", 0.0, 1.0, &mut mapping.corner1[0]) { self.mapping_needs_update = true; }
-        if ui.slider("TR Y", 0.0, 1.0, &mut mapping.corner1[1]) { self.mapping_needs_update = true; }
+        if ui.slider("TR X", 0.0, 1.0, &mut mapping.corner1[0]) { *needs_update = true; }
+        if ui.slider("TR Y", 0.0, 1.0, &mut mapping.corner1[1]) { *needs_update = true; }
         ui.columns(1, "", false);
         
         // Bottom row
         ui.columns(2, "corners_bottom", false);
         ui.text("Bottom-Left");
-        if ui.slider("BL X", 0.0, 1.0, &mut mapping.corner3[0]) { self.mapping_needs_update = true; }
-        if ui.slider("BL Y", 0.0, 1.0, &mut mapping.corner3[1]) { self.mapping_needs_update = true; }
+        if ui.slider("BL X", 0.0, 1.0, &mut mapping.corner3[0]) { *needs_update = true; }
+        if ui.slider("BL Y", 0.0, 1.0, &mut mapping.corner3[1]) { *needs_update = true; }
         ui.next_column();
         ui.text("Bottom-Right");
-        if ui.slider("BR X", 0.0, 1.0, &mut mapping.corner2[0]) { self.mapping_needs_update = true; }
-        if ui.slider("BR Y", 0.0, 1.0, &mut mapping.corner2[1]) { self.mapping_needs_update = true; }
+        if ui.slider("BR X", 0.0, 1.0, &mut mapping.corner2[0]) { *needs_update = true; }
+        if ui.slider("BR Y", 0.0, 1.0, &mut mapping.corner2[1]) { *needs_update = true; }
         ui.columns(1, "", false);
         
         ui.separator();
         
         // Global transforms
         ui.text_colored([1.0, 1.0, 0.0, 1.0], "Global Transform");
-        if ui.slider("Scale X", 0.1, 3.0, &mut mapping.scale[0]) { self.mapping_needs_update = true; }
-        if ui.slider("Scale Y", 0.1, 3.0, &mut mapping.scale[1]) { self.mapping_needs_update = true; }
-        if ui.slider("Offset X", -1.0, 1.0, &mut mapping.offset[0]) { self.mapping_needs_update = true; }
-        if ui.slider("Offset Y", -1.0, 1.0, &mut mapping.offset[1]) { self.mapping_needs_update = true; }
-        if ui.slider("Rotation", -180.0, 180.0, &mut mapping.rotation) { self.mapping_needs_update = true; }
+        if ui.slider("Scale X", 0.1, 3.0, &mut mapping.scale[0]) { *needs_update = true; }
+        if ui.slider("Scale Y", 0.1, 3.0, &mut mapping.scale[1]) { *needs_update = true; }
+        if ui.slider("Offset X", -1.0, 1.0, &mut mapping.offset[0]) { *needs_update = true; }
+        if ui.slider("Offset Y", -1.0, 1.0, &mut mapping.offset[1]) { *needs_update = true; }
+        if ui.slider("Rotation", -180.0, 180.0, &mut mapping.rotation) { *needs_update = true; }
         
         ui.separator();
         
         // Opacity and blend
         ui.text_colored([1.0, 1.0, 0.0, 1.0], "Blend Settings");
-        if ui.slider("Opacity", 0.0, 1.0, &mut mapping.opacity) { self.mapping_needs_update = true; }
+        if ui.slider("Opacity", 0.0, 1.0, &mut mapping.opacity) { *needs_update = true; }
         
         let blend_modes = ["Normal", "Add", "Multiply", "Screen"];
         ui.text("Blend Mode:");
         for (i, mode) in blend_modes.iter().enumerate() {
             if ui.radio_button(mode, &mut mapping.blend_mode, i as i32) {
-                self.mapping_needs_update = true;
+                *needs_update = true;
             }
             if i < blend_modes.len() - 1 {
                 ui.same_line();
@@ -897,7 +981,7 @@ impl ControlGui {
         // Reset button
         if ui.button("Reset to Default") {
             mapping.reset();
-            self.mapping_needs_update = true;
+            *needs_update = true;
         }
         ui.same_line();
         if ui.button("Reset Corners Only") {
@@ -905,96 +989,151 @@ impl ControlGui {
             mapping.corner1 = [1.0, 0.0];
             mapping.corner2 = [1.0, 1.0];
             mapping.corner3 = [0.0, 1.0];
-            self.mapping_needs_update = true;
+            *needs_update = true;
         }
     }
     
     /// Build the Output tab
     fn build_output_tab(&mut self, ui: &imgui::Ui) {
-        ui.text("Output Settings");
+        ui.text("Output Windows");
         ui.separator();
-        
-        // Fullscreen toggle
-        let mut fullscreen = {
-            let state = self.shared_state.lock().unwrap();
-            state.output_fullscreen
-        };
-        
-        if ui.checkbox("Fullscreen Output", &mut fullscreen) {
+
+        // ── Mapping Output ───────────────────────────────────────────────────
+        ui.text_colored([0.5, 0.8, 1.0, 1.0], "Mapping Output");
+
+        if ui.checkbox("Open Mapping Window", &mut self.mapping_window_open) {
             let mut state = self.shared_state.lock().unwrap();
-            state.output_fullscreen = fullscreen;
+            state.mapping_window_open = self.mapping_window_open;
         }
-        
-        ui.separator();
-        
-        // NDI Output section
+
+        if ui.checkbox("Fullscreen Mapping", &mut self.mapping_window_fullscreen) {
+            let mut state = self.shared_state.lock().unwrap();
+            state.mapping_window_fullscreen = self.mapping_window_fullscreen;
+        }
+
         #[cfg(feature = "ndi")]
         {
-            ui.text_colored([0.0, 1.0, 0.5, 1.0], "NDI Output");
-
-            ui.input_text("Stream Name", &mut self.ndi_output_name)
+            ui.input_text("NDI Stream Name##mapping", &mut self.mapping_ndi_name)
                 .build();
 
             let ndi_active = {
                 let state = self.shared_state.lock().unwrap();
-                state.ndi_output.is_active
+                state.mapping_ndi_output.is_active
             };
 
             if !ndi_active {
-                if ui.button("Start NDI Output") {
+                if ui.button("Start NDI##mapping") {
                     let mut state = self.shared_state.lock().unwrap();
-                    state.ndi_output.stream_name = self.ndi_output_name.clone();
-                    state.ndi_output_command = NdiOutputCommand::Start;
+                    state.mapping_ndi_output.stream_name = self.mapping_ndi_name.clone();
+                    state.mapping_ndi_output_command = NdiOutputCommand::Start;
                 }
             } else {
-                if ui.button("Stop NDI Output") {
+                if ui.button("Stop NDI##mapping") {
                     let mut state = self.shared_state.lock().unwrap();
-                    state.ndi_output_command = NdiOutputCommand::Stop;
+                    state.mapping_ndi_output_command = NdiOutputCommand::Stop;
                 }
             }
         }
-        
-        // Syphon Output section (macOS only)
+
         #[cfg(target_os = "macos")]
         {
-            ui.separator();
-            ui.text_colored([1.0, 0.5, 0.0, 1.0], "Syphon Output (macOS)");
-            ui.text_disabled("Share GPU texture with Resolume, MadMapper, etc.");
-            
-            // Syphon server name input
-            ui.input_text("Server Name", &mut self.syphon_server_name)
+            ui.input_text("Syphon Server##mapping", &mut self.mapping_syphon_name)
                 .build();
-            
-            // Check if syphon should be active from shared state
-            let syphon_requested = {
+
+            let syphon_enabled = {
                 let state = self.shared_state.lock().unwrap();
-                state.syphon_output.enabled
+                state.mapping_syphon_output.enabled
             };
-            
-            if !syphon_requested {
-                if ui.button("Start Syphon Output") {
+
+            if !syphon_enabled {
+                if ui.button("Start Syphon##mapping") {
                     let mut state = self.shared_state.lock().unwrap();
-                    state.syphon_output.server_name = self.syphon_server_name.clone();
-                    state.syphon_output.enabled = true;
+                    state.mapping_syphon_output.server_name = self.mapping_syphon_name.clone();
+                    state.mapping_syphon_output.enabled = true;
                 }
             } else {
-                if ui.button("Stop Syphon Output") {
+                if ui.button("Stop Syphon##mapping") {
                     let mut state = self.shared_state.lock().unwrap();
-                    state.syphon_output.enabled = false;
+                    state.mapping_syphon_output.enabled = false;
                 }
             }
-            
-            ui.text(format!("Status: {}", 
-                if syphon_requested { "Active" } else { "Inactive" }));
         }
-        
-        // Status
+
         ui.separator();
+
+        // ── Matrix Output ────────────────────────────────────────────────────
+        ui.text_colored([1.0, 0.5, 0.8, 1.0], "Matrix Output");
+
+        if ui.checkbox("Open Matrix Window", &mut self.matrix_window_open) {
+            let mut state = self.shared_state.lock().unwrap();
+            state.matrix_window_open = self.matrix_window_open;
+        }
+
+        if ui.checkbox("Fullscreen Matrix", &mut self.matrix_window_fullscreen) {
+            let mut state = self.shared_state.lock().unwrap();
+            state.matrix_window_fullscreen = self.matrix_window_fullscreen;
+        }
+
+        #[cfg(feature = "ndi")]
+        {
+            ui.input_text("NDI Stream Name##matrix", &mut self.matrix_ndi_name)
+                .build();
+
+            let ndi_active = {
+                let state = self.shared_state.lock().unwrap();
+                state.matrix_ndi_output.is_active
+            };
+
+            if !ndi_active {
+                if ui.button("Start NDI##matrix") {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.matrix_ndi_output.stream_name = self.matrix_ndi_name.clone();
+                    state.matrix_ndi_output_command = NdiOutputCommand::Start;
+                }
+            } else {
+                if ui.button("Stop NDI##matrix") {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.matrix_ndi_output_command = NdiOutputCommand::Stop;
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            ui.input_text("Syphon Server##matrix", &mut self.matrix_syphon_name)
+                .build();
+
+            let syphon_enabled = {
+                let state = self.shared_state.lock().unwrap();
+                state.matrix_syphon_output.enabled
+            };
+
+            if !syphon_enabled {
+                if ui.button("Start Syphon##matrix") {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.matrix_syphon_output.server_name = self.matrix_syphon_name.clone();
+                    state.matrix_syphon_output.enabled = true;
+                }
+            } else {
+                if ui.button("Stop Syphon##matrix") {
+                    let mut state = self.shared_state.lock().unwrap();
+                    state.matrix_syphon_output.enabled = false;
+                }
+            }
+        }
+
+        ui.separator();
+
+        // ── Status ───────────────────────────────────────────────────────────
         ui.text("Status:");
         let state = self.shared_state.lock().unwrap();
         #[cfg(feature = "ndi")]
-        ui.text(format!("NDI Output: {}",
-            if state.ndi_output.is_active { "Active" } else { "Inactive" }));
+        {
+            ui.text(format!("Mapping NDI: {}",
+                if state.mapping_ndi_output.is_active { "Active" } else { "Inactive" }));
+            ui.text(format!("Matrix NDI: {}",
+                if state.matrix_ndi_output.is_active { "Active" } else { "Inactive" }));
+        }
         ui.text(format!("Input 1: {} ({}x{})",
             if state.ndi_input1.is_active { "Active" } else { "Inactive" },
             state.ndi_input1.width,

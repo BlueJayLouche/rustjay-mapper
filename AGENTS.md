@@ -5,9 +5,9 @@
 A **projection mapping video application** built in Rust with:
 - NDI and Syphon input/output for video streaming
 - GPU-accelerated rendering via wgpu
-- Dual-window architecture (control + fullscreen output)
+- Multi-window architecture (control + dedicated mapping output + dedicated matrix output)
 - AprilTag-based video wall calibration
-- Hidden cursor on output window for clean projection
+- Hidden cursor on output windows for clean projection
 
 ## Key Architecture Patterns
 
@@ -35,25 +35,32 @@ A **projection mapping video application** built in Rust with:
 - Dedicated sender thread (prevents render loop blocking)
 - Bounded channel (capacity=2) for low latency
 - Thread persists via `Box::leak` pattern
+- Each output window has its own independent NDI stream
 
 ### Syphon Integration (macOS)
 
 **Input (`syphon_input.rs`)**: Receives GPU textures from other apps (Resolume, TouchDesigner, etc.) via IOSurface — zero-copy.
 
-**Output (`output/syphon.rs`)**: Shares the rendered output texture with other apps via Syphon server.
+**Output (`output/syphon.rs`)**: Each output window can share its texture independently via its own Syphon server.
 
-### Dual Window Setup
+### Multi-Window Setup
 
 ```rust
-// Shared wgpu resources (wrapped in Arc)
-let (device, queue) = adapter.request_device(...).await?;
+// RenderEngine — headless, produces intermediate textures
+let engine = RenderEngine::new(instance, &config, shared_state).await?;
 
-// Output window - owns surface
-let output_surface = instance.create_surface(output_window)?;
+// Mapping OutputWindow — owns surface, blits video wall texture
+let mapping = OutputWindow::new(instance, &adapter, &device, &queue, event_loop, &mapping_config, OutputType::Mapping)?;
 
-// Control window - shares device/queue via Arc
-let imgui_renderer = ImGuiRenderer::new(device, queue, control_window)?;
+// Matrix OutputWindow — owns surface, blits video matrix texture
+let matrix = OutputWindow::new(instance, &adapter, &device, &queue, event_loop, &matrix_config, OutputType::Matrix)?;
+
+// Control window — shares device/queue via Arc
+let imgui_renderer = ImGuiRenderer::new(instance, &adapter, device, queue, control_window, 1.0)?;
 ```
+
+- **`RenderEngine`** (`src/engine/renderer.rs`): Headless renderer. Produces `render_target`, `video_wall_output_texture`, and `video_matrix_output_texture`. Both wall and matrix can render simultaneously.
+- **`OutputWindow`** (`src/app/output_window.rs`): Each owns a `winit::Window` + `wgpu::Surface` + blit pipeline. Blits the appropriate `RenderEngine` texture to its surface each frame. Also manages its own NDI (`NdiOutputSender` + `ReadbackPool`) and Syphon output.
 
 ## Important Dependencies
 
@@ -76,6 +83,24 @@ let imgui_renderer = ImGuiRenderer::new(device, queue, control_window)?;
 - Requires NDI SDK runtime for NDI functionality
 - Requires `syphon-rs` sibling repo for Syphon (macOS) — see README
 - `build.rs` handles rpath embedding for Syphon and NDI on macOS
+
+## Configuration File Locations
+
+All user data is stored in platform-specific directories to ensure bundled apps can write settings:
+
+| File Type | Location Pattern | Example (macOS) |
+|-----------|------------------|-----------------|
+| Main config | `<config_dir>/rusty_mapper/config.toml` | `~/Library/Application Support/rusty_mapper/config.toml` |
+| Videowall config | `<config_dir>/rusty_mapper/videowall_config.json` | `~/Library/Application Support/rusty_mapper/videowall_config.json` |
+| Matrix presets | `<config_dir>/rusty_mapper/matrix_presets/*.json` | `~/Library/Application Support/rusty_mapper/matrix_presets/` |
+| General presets | `<config_dir>/rusty_mapper/presets/*.json` | `~/Library/Application Support/rusty_mapper/presets/` |
+
+**Platform-specific `<config_dir>`:**
+- **macOS**: `~/Library/Application Support/`
+- **Windows**: `%APPDATA%\` (typically `C:\Users\<user>\AppData\Roaming\`)
+- **Linux**: `~/.config/`
+
+**Backward Compatibility**: On startup, the app checks for a legacy `config.toml` in the working directory and migrates it to the new location automatically.
 
 ## Code Style
 

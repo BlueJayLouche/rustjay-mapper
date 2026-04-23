@@ -1,5 +1,7 @@
 use super::App;
+use crate::app::output_window::{OutputType, OutputWindow};
 use crate::videowall::{CalibrationStatus};
+use winit::event_loop::ActiveEventLoop;
 
 impl App {
     /// Update all inputs and upload frames to GPU.
@@ -40,8 +42,10 @@ impl App {
                     // Get a reference to the receiver's cached texture and copy now
                     if let Some(texture) = manager.input1.take_syphon_texture() {
                         let (w, h) = (texture.width(), texture.height());
-                        if let Some(ref mut engine) = self.output_engine {
-                            engine.input_texture_manager.update_input1_from_texture(texture);
+                        if let Some(ref mut engine) = self.render_engine {
+                            // Upload to both subsystem texture managers
+                            engine.mapping_input_texture_manager.update_input1_from_texture(&texture);
+                            engine.matrix_input_texture_manager.update_input1_from_texture(&texture);
                         }
                         input1_syphon_dims = Some((w, h));
                     } else {
@@ -82,8 +86,9 @@ impl App {
                 if manager.input2.input_type() == crate::input::InputType::Syphon {
                     if let Some(texture) = manager.input2.take_syphon_texture() {
                         let (w, h) = (texture.width(), texture.height());
-                        if let Some(ref mut engine) = self.output_engine {
-                            engine.input_texture_manager.update_input2_from_texture(texture);
+                        if let Some(ref mut engine) = self.render_engine {
+                            engine.mapping_input_texture_manager.update_input2_from_texture(&texture);
+                            engine.matrix_input_texture_manager.update_input2_from_texture(&texture);
                         }
                         input2_syphon_dims = Some((w, h));
                     } else {
@@ -126,8 +131,9 @@ impl App {
                     calibration.submit_frame(frame_data.clone(), width, height);
                 }
             }
-            if let Some(ref mut engine) = self.output_engine {
-                engine.input_texture_manager.update_input1(&frame_data, width, height);
+            if let Some(ref mut engine) = self.render_engine {
+                engine.mapping_input_texture_manager.update_input1(&frame_data, width, height);
+                engine.matrix_input_texture_manager.update_input1(&frame_data, width, height);
             }
             let mut state = self.shared_state.lock().unwrap();
             state.ndi_input1.width = width;
@@ -142,8 +148,9 @@ impl App {
             state.ndi_input2.height = h;
         }
         if let Some((frame_data, width, height)) = input2_cpu {
-            if let Some(ref mut engine) = self.output_engine {
-                engine.input_texture_manager.update_input2(&frame_data, width, height);
+            if let Some(ref mut engine) = self.render_engine {
+                engine.mapping_input_texture_manager.update_input2(&frame_data, width, height);
+                engine.matrix_input_texture_manager.update_input2(&frame_data, width, height);
             }
             let mut state = self.shared_state.lock().unwrap();
             state.ndi_input2.width = width;
@@ -167,7 +174,7 @@ impl App {
                                     .flat_map(|p| [p[0], p[1], p[2], p[3]])
                                     .collect();
                                 drop(state);
-                                if let Some(ref mut engine) = self.output_engine {
+                                if let Some(ref mut engine) = self.render_engine {
                                     engine.upload_calibration_pattern(&rgba_data, width, height);
                                 }
                             }
@@ -212,7 +219,7 @@ impl App {
 
         if let Some((rgba_data, width, height)) = pattern_to_display {
             if self.last_matrix_pattern != Some((width, height)) {
-                if let Some(ref mut engine) = self.output_engine {
+                if let Some(ref mut engine) = self.render_engine {
                     if let Err(e) = engine.upload_test_pattern(&rgba_data, width, height) {
                         log::error!("Failed to upload matrix test pattern: {}", e);
                     } else {
@@ -233,7 +240,7 @@ impl App {
             (state.videowall_enabled, state.videowall_config.clone())
         };
 
-        if let Some(ref mut engine) = self.output_engine {
+        if let Some(ref mut engine) = self.render_engine {
             engine.set_video_wall_enabled(enabled);
             if enabled {
                 if let Some(ref cfg) = config {
@@ -252,7 +259,7 @@ impl App {
 
         let mapping_count = config.input_grid.mappings.len();
 
-        if let Some(ref mut engine) = self.output_engine {
+        if let Some(ref mut engine) = self.render_engine {
             let was_enabled = engine.is_video_matrix_enabled();
             engine.set_video_matrix_enabled(enabled);
 
@@ -273,14 +280,92 @@ impl App {
         }
     }
 
+    /// Sync output window open/close state from SharedState.
+    pub(super) fn sync_output_window_states(&mut self, event_loop: &ActiveEventLoop) {
+        let (mapping_open, matrix_open) = {
+            let state = self.shared_state.lock().unwrap();
+            (state.mapping_window_open, state.matrix_window_open)
+        };
+
+        // Create mapping output window if needed
+        if mapping_open && self.mapping_output.is_none() {
+            if let (Some(instance), Some(device), Some(queue)) =
+                (&self.wgpu_instance, &self.wgpu_device, &self.wgpu_queue)
+            {
+                match OutputWindow::new(
+                    instance,
+                    self.wgpu_adapter.as_ref().unwrap(),
+                    device,
+                    queue,
+                    event_loop,
+                    &self.config.mapping_window,
+                    OutputType::Mapping,
+                ) {
+                    Ok(output) => {
+                        // Apply fullscreen if set in state
+                        let fullscreen = {
+                            let state = self.shared_state.lock().unwrap();
+                            state.mapping_window_fullscreen
+                        };
+                        if fullscreen {
+                            output.toggle_fullscreen();
+                        }
+                        self.mapping_output = Some(output);
+                    }
+                    Err(e) => log::error!("Failed to create mapping output window: {}", e),
+                }
+            }
+        }
+
+        // Close mapping output window if needed
+        if !mapping_open && self.mapping_output.is_some() {
+            self.mapping_output = None;
+        }
+
+        // Create matrix output window if needed
+        if matrix_open && self.matrix_output.is_none() {
+            if let (Some(instance), Some(device), Some(queue)) =
+                (&self.wgpu_instance, &self.wgpu_device, &self.wgpu_queue)
+            {
+                match OutputWindow::new(
+                    instance,
+                    self.wgpu_adapter.as_ref().unwrap(),
+                    device,
+                    queue,
+                    event_loop,
+                    &self.config.matrix_window,
+                    OutputType::Matrix,
+                ) {
+                    Ok(output) => {
+                        let fullscreen = {
+                            let state = self.shared_state.lock().unwrap();
+                            state.matrix_window_fullscreen
+                        };
+                        if fullscreen {
+                            output.toggle_fullscreen();
+                        }
+                        self.matrix_output = Some(output);
+                    }
+                    Err(e) => log::error!("Failed to create matrix output window: {}", e),
+                }
+            }
+        }
+
+        // Close matrix output window if needed
+        if !matrix_open && self.matrix_output.is_some() {
+            self.matrix_output = None;
+        }
+    }
+
     /// Copy input/output textures into ImGui preview textures.
     pub(super) fn update_preview_textures(&mut self) {
         let (input_tex, output_tex) = {
-            if let Some(ref engine) = self.output_engine {
-                let input = engine.input_texture_manager().input1.as_ref()
+            if let Some(ref engine) = self.render_engine {
+                let input = engine.mapping_input_texture_manager().input1.as_ref()
                     .map(|t| &t.texture);
-                let output = if engine.is_video_matrix_enabled() {
-                    engine.video_matrix_output_texture()
+                // Show mapping output (wall or base render target) as the preview
+                let output = if engine.is_video_wall_enabled() {
+                    engine.video_wall_output_texture()
                         .map(|t| &t.texture)
                         .or_else(|| Some(&engine.render_target().texture))
                 } else {
