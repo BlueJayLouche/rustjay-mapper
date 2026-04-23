@@ -50,8 +50,11 @@ fn main() {
                 });
 
             if let Some(ref dir) = ndi_lib_dir {
+                println!("cargo:rustc-link-search=native={}", dir.display());
                 println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-                println!("cargo:warning=NDI rpath: {}", dir.display());
+                println!("cargo:warning=NDI library found at: {}", dir.display());
+            } else {
+                println!("cargo:warning=NDI feature is enabled, but libndi.dylib was NOT found in standard paths. Please set NDI_SDK_DIR.");
             }
         }
 
